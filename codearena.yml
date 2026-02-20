@@ -1,0 +1,75 @@
+# .github/workflows/codearena.yml
+# 当 PR 打上 "deep-review" 标签时，自动触发 CodeArena 多模型对抗审查
+name: "⚔️ CodeArena Review"
+
+on:
+  pull_request:
+    types: [labeled, opened, synchronize]
+
+jobs:
+  arena:
+    if: contains(github.event.pull_request.labels.*.name, 'deep-review')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install anthropic openai google-generativeai
+
+      - name: Get changed files
+        id: changed
+        run: |
+          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }} -- '*.py' '*.js' '*.ts' '*.go' '*.java' '*.rs')
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: "⚔️ CodeArena: Run Multi-Model Review"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          mkdir -p reports
+          while IFS= read -r file; do
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              echo "⚔️ CodeArena reviewing: $file"
+              python review.py "$file" --mode adversarial -o "reports/$(basename $file).md" --json || true
+            fi
+          done <<< "${{ steps.changed.outputs.files }}"
+
+      - name: Post CodeArena Review Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const reportsDir = 'reports';
+
+            if (!fs.existsSync(reportsDir)) return;
+
+            const files = fs.readdirSync(reportsDir).filter(f => f.endsWith('.md'));
+            if (files.length === 0) return;
+
+            let body = '## ⚔️ CodeArena — Multi-Model Adversarial Code Review\n\n';
+            for (const file of files) {
+              const content = fs.readFileSync(path.join(reportsDir, file), 'utf8');
+              body += content + '\n\n---\n\n';
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body.slice(0, 65000)
+            });
