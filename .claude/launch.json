@@ -4,8 +4,8 @@
     {
       "name": "codearena-preview",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5183", "--strictPort"],
-      "port": 5183
+      "runtimeArgs": ["vite"],
+      "autoPort": true
     }
   ]
 }

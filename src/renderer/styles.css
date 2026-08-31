@@ -864,3 +864,49 @@ button.danger:hover:not(:disabled) {
 .outcome.cancelled .outcome-title {
   color: var(--major);
 }
+
+/* ------------------------------------------------- the build decision, in the transcript */
+
+.decision {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 2px 0 20px;
+  padding: 11px 13px;
+  border: 1px solid rgba(217, 119, 87, 0.35);
+  border-radius: 10px;
+  background: rgba(217, 119, 87, 0.06);
+}
+
+.decision-go {
+  background: var(--builder);
+  border-color: var(--builder);
+  color: #1a0d07;
+  font-weight: 620;
+}
+.decision-go:hover:not(:disabled) {
+  filter: brightness(1.08);
+  color: #1a0d07;
+}
+
+.decision-price {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.decision-note {
+  flex: 1 0 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  padding: 8px 10px;
+  outline: none;
+  user-select: text;
+}
+.decision-note:focus { border-color: #384252; }
+.decision-note::placeholder { color: var(--text-faint); }

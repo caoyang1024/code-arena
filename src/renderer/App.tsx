@@ -509,6 +509,56 @@ function Outcome({
   );
 }
 
+/**
+ * The decision, in the transcript, under the reply that produced something worth building.
+ *
+ * It used to be a button beside the composer, paired with Send as though the two were
+ * alternatives. They are not: Send submits what you typed, this acts on the conversation and
+ * usually ignores the box entirely. Putting it here also puts it where you are already
+ * reading -- you finish the reply, and the choice is on the next line.
+ *
+ * The price is next to it because compiling is free and this is not, and no developer has
+ * the reflex to estimate it. The focus note is a setting on this build, not a message: the
+ * reviewer can be told to look harder somewhere, never to look away.
+ */
+function BuildDecision({
+  onBuild,
+  note,
+  onNote,
+  rounds,
+}: {
+  onBuild: () => void;
+  note: string;
+  onNote: (v: string) => void;
+  rounds: number;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="decision">
+      <button className="decision-go" onClick={onBuild}>
+        Build this
+      </button>
+      <span className="decision-price">≈ $2 · up to {rounds} rounds</span>
+      <div className="spacer" />
+      <button className="link" onClick={() => setOpen((v) => !v)}>
+        {open ? "− focus" : "+ focus"}
+      </button>
+      {open && (
+        <input
+          className="decision-note"
+          value={note}
+          autoFocus
+          placeholder="Anything the reviewer should look at especially closely?"
+          onChange={(e) => onNote(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) onBuild();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 // -----------------------------------------------------------------------------------------
 // app
 
@@ -566,6 +616,8 @@ function Arena() {
   const [skipPlanReview, setSkipPlanReview] = useState(false);
   /** True once the conversation has something in it worth building. */
   const [hasContext, setHasContext] = useState(false);
+  /** Optional steer for the reviewer. A setting on this build, not a message to anyone. */
+  const [focus, setFocus] = useState("");
 
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -710,6 +762,11 @@ function Arena() {
    * and files start changing. Deliberately a separate, explicit action -- never something
    * that happens because a message looked like an instruction.
    */
+  /**
+   * The decision. Everything before it was read-only; this is where the gatekeeper enters and
+   * files start changing. It acts on the conversation, which is why it does not live next to
+   * the composer and does not consume what you typed there.
+   */
   const build = useCallback(
     async (demo = false) => {
       if (running) return;
@@ -718,11 +775,7 @@ function Arena() {
         setBlocks([]);
         setPhase(null);
       }
-      const instruction = draft.trim();
-      if (instruction) {
-        inFlight.current = instruction;
-        setDraft("");
-      }
+      const instruction = focus.trim();
       pinned.current = true;
       setRunning(true);
       const res = await window.arena.build({
@@ -730,9 +783,10 @@ function Arena() {
         ...(instruction ? { instruction } : {}),
         demo,
       });
-      if (!res.started) fail(res.reason ?? "Could not start.");
+      if (res.started) setFocus("");
+      else fail(res.reason ?? "Could not start.");
     },
-    [running, projectDir, draft, turnOptions, fail],
+    [running, projectDir, focus, turnOptions, fail],
   );
 
   const signIn = useCallback(async () => {
@@ -783,6 +837,9 @@ function Arena() {
     setHasContext(false);
     setPhase(null);
   }, [running]);
+
+  const canBuild =
+    !running && hasContext && Boolean(projectDir) && blocks.at(-1)?.kind === "builder";
 
   const ready = Boolean(doctor?.builder.ok && doctor?.gatekeeper.ok && doctor?.project.ok);
   const building =
@@ -881,7 +938,17 @@ function Arena() {
             </button>
           </div>
         ) : (
-          blocks.map((b) => <BlockView block={b} key={b.id} projectDir={projectDir} />)
+          <>
+            {blocks.map((b) => <BlockView block={b} key={b.id} projectDir={projectDir} />)}
+            {canBuild && (
+              <BuildDecision
+                onBuild={() => void build()}
+                note={focus}
+                onNote={setFocus}
+                rounds={maxRounds}
+              />
+            )}
+          </>
         )}
       </div>
 
@@ -967,7 +1034,7 @@ function Arena() {
                 ? "Stop (Esc) to take it back and edit…"
                 : projectDir
                   ? hasContext
-                    ? "Reply, or press Build this when you have decided…"
+                    ? "Keep talking — Build this appears when there is something to build."
                     : "What are you thinking about? Nothing gets written yet."
                   : "Choose a project to begin…"
             }
@@ -993,29 +1060,26 @@ function Arena() {
               }
             }}
           />
-          <div className="composer-actions">
-            {running ? (
-              <button className="stop" onClick={() => void stop()}>
-                Stop
-              </button>
-            ) : (
-              <button onClick={() => void send()} disabled={!draft.trim() || !projectDir}>
-                Send
-              </button>
-            )}
-            <button
-              className="primary build"
-              onClick={() => void build()}
-              disabled={running || !projectDir || (!hasContext && !draft.trim())}
-              title={
-                hasContext
-                  ? "Plan and build what you just discussed, with the gatekeeper reviewing"
-                  : "Say what you want first, or type it here and press Build this"
-              }
-            >
-              {building ? "Building…" : "Build this"}
+          {/*
+            One field, one button.
+            `Send` and `Build this` used to sit here as peers, but Build usually ignores this
+            box entirely -- it builds the conversation, not the draft. Two buttons on one
+            field where one of them does not read the field is incoherent. The build decision
+            moved into the transcript, under the reply that produced something worth building.
+          */}
+          {running ? (
+            <button className="stop" onClick={() => void stop()}>
+              Stop
             </button>
-          </div>
+          ) : (
+            <button
+              className="primary"
+              onClick={() => void send()}
+              disabled={!draft.trim() || !projectDir}
+            >
+              Send
+            </button>
+          )}
         </div>
         <div className="composer-meta">
           <label>
