@@ -83,7 +83,12 @@ export async function probe(path: string): Promise<CodexProbe | null> {
     const err = e as { stdout?: string; stderr?: string };
     loginDetail = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim() || loginDetail;
   }
-  loggedIn = /logged in/i.test(loginDetail);
+  // Anchor it. /logged in/i also matches "Not logged in" -- and matched the default value of
+  // loginDetail itself -- so this probe returned true unconditionally, including when codex
+  // printed nothing at all. doctor showed a green tick, both guards passed, and the auth
+  // failure surfaced halfway through a build instead. Same lie the Claude-side preflight told
+  // before claude-path.ts replaced it.
+  loggedIn = /^logged in/i.test(loginDetail);
 
   return { path, version, signedByOpenAI, authority, loggedIn, loginDetail };
 }
