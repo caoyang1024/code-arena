@@ -9,7 +9,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runTask } from "../src/core/orchestrator.js";
+import { runChat, runBuild } from "../src/core/orchestrator.js";
 import { resolveCodex } from "../src/core/codex-path.js";
 import { Git } from "../src/core/git.js";
 import { replayFixture } from "../src/core/fixture.js";
@@ -21,8 +21,15 @@ const exec = promisify(execFile);
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let win: BrowserWindow | null = null;
-/** Set while a task is running so a second Run is refused rather than racing the first. */
+/** Set while a turn is in flight so a second one is refused rather than racing the first. */
 let running = false;
+
+/**
+ * The conversation. One Claude session spans chatting, planning and building, so "build what
+ * we just discussed" resolves to something real. Cleared only by an explicit reset.
+ */
+let session: string | null = null;
+let projectOfSession = "";
 
 function createWindow() {
   win = new BrowserWindow({
@@ -50,6 +57,7 @@ function createWindow() {
       running = true;
       void replayFixture((e) => target.send("arena:event", e)).finally(() => {
         running = false;
+        target.send("arena:idle", true);
       });
     });
   }
@@ -140,51 +148,106 @@ ipcMain.handle("arena:pickProject", async (): Promise<string | null> => {
   return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
+interface TurnOptions {
+  projectDir: string;
+  maxRounds: number;
+  skipPlanReview: boolean;
+}
+
+/** Switching projects invalidates the conversation -- it was about other code. */
+function ensureProject(projectDir: string) {
+  if (projectOfSession !== projectDir) {
+    session = null;
+    projectOfSession = projectDir;
+  }
+}
+
+function configFor(opts: TurnOptions, codexPath: string): ArenaConfig {
+  return {
+    projectDir: opts.projectDir,
+    maxRounds: opts.maxRounds,
+    skipPlanReview: opts.skipPlanReview,
+    codexPath,
+  };
+}
+
 ipcMain.handle(
-  "arena:start",
+  "arena:chat",
   async (
     event,
-    opts: { task: string; projectDir: string; maxRounds: number; skipPlanReview: boolean; demo?: boolean },
+    opts: TurnOptions & { message: string },
   ): Promise<{ started: boolean; reason?: string }> => {
-    if (running) return { started: false, reason: "A task is already running." };
+    if (running) return { started: false, reason: "Still working on the previous turn." };
+    ensureProject(opts.projectDir);
+
+    const send = (e: ArenaEvent) => event.sender.send("arena:event", e);
+    const codex = await resolveCodex();
+
+    running = true;
+    void runChat(opts.message, configFor(opts, codex?.path ?? ""), send, session)
+      .then((next) => {
+        session = next;
+      })
+      .finally(() => {
+        running = false;
+        event.sender.send("arena:idle", true);
+      });
+
+    return { started: true };
+  },
+);
+
+ipcMain.handle(
+  "arena:build",
+  async (
+    event,
+    opts: TurnOptions & { instruction?: string; demo?: boolean },
+  ): Promise<{ started: boolean; reason?: string }> => {
+    if (running) return { started: false, reason: "Still working on the previous turn." };
 
     const send = (e: ArenaEvent) => event.sender.send("arena:event", e);
 
-    // Demo mode replays a recorded transcript. It exists so the UI can be built and reviewed
-    // without spending model quota, and so a first-run user can see what the loop looks like
-    // before connecting an account.
+    // Demo mode replays a recorded transcript. It exists so the UI can be reviewed without
+    // spending model quota, and so a first-run user can see the loop before connecting an
+    // account.
     if (opts.demo) {
       running = true;
-      replayFixture(send)
-        .catch((e) => send({ type: "log", level: "error", message: String(e) }))
+      void replayFixture(send)
+        .catch((e: unknown) => send({ type: "log", level: "error", message: String(e) }))
         .finally(() => {
           running = false;
+          event.sender.send("arena:idle", true);
         });
       return { started: true };
     }
+
+    ensureProject(opts.projectDir);
 
     const codex = await resolveCodex();
     if (!codex?.loggedIn) {
       return { started: false, reason: "Gatekeeper unavailable — check Setup." };
     }
 
-    const config: ArenaConfig = {
-      projectDir: opts.projectDir,
-      maxRounds: opts.maxRounds,
-      skipPlanReview: opts.skipPlanReview,
-      codexPath: codex.path,
-    };
-
     running = true;
-    runTask(opts.task, config, send)
-      .catch((e) => send({ type: "log", level: "error", message: String(e?.message ?? e) }))
+    void runBuild(configFor(opts, codex.path), send, session, opts.instruction)
+      .then((outcome) => {
+        session = outcome.sessionId;
+      })
+      .catch((e: unknown) =>
+        send({ type: "log", level: "error", message: String((e as Error)?.message ?? e) }),
+      )
       .finally(() => {
         running = false;
+        event.sender.send("arena:idle", true);
       });
 
     return { started: true };
   },
 );
+
+ipcMain.handle("arena:reset", async () => {
+  session = null;
+});
 
 ipcMain.handle("arena:revealDiff", async (_e, projectDir: string) => {
   shell.openPath(projectDir);

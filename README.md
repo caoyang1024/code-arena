@@ -2,7 +2,11 @@
 
 One AI builds. Another AI decides whether it's good enough.
 
-CodeArena runs a software task through two independent models with different roles:
+**You talk to Claude the way you always do.** Nothing is planned and nothing is written until
+you decide. When you do, a second model from a different vendor has to agree before the work
+lands.
+
+CodeArena runs that decision through two independent models with different roles:
 
 - **Builder** — Claude, via [`@anthropic-ai/claude-agent-sdk`](https://code.claude.com/docs/en/agent-sdk).
   Plans in read-only mode, then implements.
@@ -15,19 +19,33 @@ vendor with a different training run, does not share the first one's blind spots
 ## The loop
 
 ```
-              ┌──────────────── request_changes (< maxRounds) ───────────┐
-              ↓                                                          │
-task → planning → plan_review → implementing → diff_review → approved    │
-         (Claude)   (Codex)       (Claude)       (Codex)   ↑             │
-                                       ↑                   └─────────────┘
-                                       └── request_changes (< maxRounds) ─┘
-
-exceeding maxRounds in either phase → escalated (stops, hands you the transcript)
+      you ⟷ builder            read-only. explore, argue, change your mind.
+         │                     no gatekeeper, nothing written, no plan.
+         │
+         ▼  ← YOU press "Build this".  This is the only way anything gets written.
+      planning ──▶ plan review ──request changes──┐
+         ▲            │                           │
+         └────────────┘  (≤ maxRounds)            │
+                      │ approve                   │
+                      ▼                           │
+      implementing ──▶ diff review ──request changes──┐
+         ▲                 │                          │
+         └─────────────────┘  (≤ maxRounds)           │
+                           │ approve                  │
+                           ▼                          │
+                      approved ──▶ back to talking ◀──┘  (escalates if rounds run out)
 ```
 
-The plan is reviewed **before a single file is touched** — the cheapest place to catch a
-wrong approach. The diff is reviewed after. Both phases loop automatically, both are capped.
+The conversation and the build are **one Claude session**. That is what makes "build what we
+just discussed" mean something: the constraint you mentioned in passing, the approach you
+rejected, the file you pointed at — all of it is still there when planning starts. Starting a
+fresh session at build time would throw that away and make the model guess again.
 
+The plan is reviewed **before a single file is touched** — the cheapest place to catch a wrong
+approach. The diff is reviewed after. Both phases loop automatically; both are capped.
+
+**Deciding is a separate, explicit act.** A message that merely sounds like an instruction
+never triggers a build. That distinction is the product.
 ## Setup
 
 Both SDKs authenticate off existing subscription logins; no API keys required.
@@ -49,13 +67,17 @@ Desktop app:
 npm run app
 ```
 
+Choose a project, then talk. Press **Build this** when you have decided.
+
 Or headless, same orchestrator:
 
 ```bash
-npm run arena -- --project ../my-repo --rounds 3 "add retry with backoff to the http client"
+npm run arena -- --project ../my-repo
 ```
 
-Flags: `--project DIR`, `--rounds N` (default 3), `--no-plan-review`.
+Type to talk; `/build` when you have decided (`/build <what>` to skip the conversation),
+`/reset` to forget it, `/exit`. Flags: `--project DIR`, `--rounds N` (default 3),
+`--no-plan-review`.
 
 ### Seeing it without an account
 
@@ -79,6 +101,12 @@ not defeatable by clever quoting. Owns *location*: what the builder can reach.
 **Currently off by default because it hangs** — see Status. Turn it on with `sandbox: true`
 once you have verified it works on your setup.
 
+**Read-only until you decide.** While you are still talking, the policy runs in `readOnly`
+mode: `Write`/`Edit` are denied outright, and so is every bash route to the same thing —
+`rm`, `mv`, `mkdir`, `tee`, `sed -i`, and `>`/`>>` redirects anywhere in a command chain.
+Reads, greps and `git log` stay available, because a builder that cannot read cannot help you
+think.
+
 **Layer 2 — the policy** (`policy.ts`). Owns *meaning*: constraints a filesystem sandbox
 cannot express. The load-bearing case is git. `git commit` and `git reset --hard` write only
 to files inside the project directory, so no sandbox will ever stop them — but CodeArena's
@@ -96,7 +124,7 @@ overridable.
 Layer 2 analyses shell strings, and string analysis of shell is not a security control — it
 enumerates commands hidden in pipelines, `;` chains, `$(...)` and backticks precisely because
 prefix-matching is trivially evaded, but Layer 1 is what actually holds. `npm run test:policy`
-covers 66 cases, roughly half of them evasion attempts.
+covers 84 cases, roughly half of them evasion attempts.
 
 **One non-obvious interaction:** the SDK's `autoAllowBashIfSandboxed` looks like a free
 convenience, but auto-approved calls bypass `canUseTool` — which would silently disable
@@ -145,12 +173,13 @@ calls.
 
 | Component | State |
 |---|---|
-| `policy.ts` + `shell.ts` guardrails | verified — `npm run test:policy` (66 assertions) |
+| `policy.ts` + `shell.ts` guardrails | verified — `npm run test:policy` (84 assertions) |
 | `git.ts` snapshot / diff / rollback | verified — `npm run test:git` (13 assertions) |
 | `gatekeeper.ts` Codex review + structured verdict | verified live — `npm run test:gatekeeper <repo>` |
 | `codex-path.ts` signed-binary resolution | verified |
 | `doctor` preflight | verified |
 | Electron app + IPC + transcript UI | verified against the recorded fixture |
+| Conversation mode (chat → decide → build) | UI and policy verified; the live chat turn shares the builder blocker below |
 | `builder.ts` Claude drive | **unverified** — blocked on Claude account credit balance |
 | OS sandbox (`sandbox: true`) | **broken on this setup — off by default.** On claude-agent-sdk 0.1.77 / macOS 25.6, `query()` emits `system:init` at ~0.6s and then never yields again. The identical call without it returns in 3.7s. Worse, the hang swallows account errors, so a failed run is indistinguishable from a slow one. Layer 2 runs either way; location containment currently rests on the policy's lexical path checks. |
 | Full loop end-to-end | **unverified** — same blocker |

@@ -1,14 +1,21 @@
 /**
  * The state machine that is CodeArena's actual product.
  *
- *   planning -> plan_review --(request_changes, < maxRounds)--> planning
- *                          \--(approve)--> implementing -> diff_review
+ * The engineer talks to the builder for as long as they like -- read-only, no gatekeeper, no
+ * cost beyond the conversation. Nothing is planned and nothing is written until they decide.
+ * Then, and only then:
+ *
+ *   (decision) -> planning -> plan_review --(request_changes, < maxRounds)--> planning
+ *                                         \--(approve)--> implementing -> diff_review
  *   diff_review --(request_changes, < maxRounds)--> implementing (revise)
- *               \--(approve)--> approved
+ *               \--(approve)--> approved, back to chatting
  *
  * Exceeding maxRounds in either phase escalates to the human rather than looping forever.
- * That ceiling is the whole reason this is safe to run unattended: a disagreeing pair of
- * models can otherwise ping-pong indefinitely and bill you for it.
+ * That ceiling is why this is safe to leave running: two models that disagree will otherwise
+ * ping-pong indefinitely and bill you for it.
+ *
+ * Everything runs on one Claude session, threaded through by `sessionId`. That is what makes
+ * "build what we just discussed" mean anything.
  */
 import { Git } from "./git.js";
 import { Gatekeeper } from "./gatekeeper.js";
@@ -16,18 +23,56 @@ import * as builder from "./builder.js";
 import type { BuilderTurn } from "./builder.js";
 import type { ArenaConfig, ArenaEvent, RoundRecord, TaskResult } from "./types.js";
 
-export async function runTask(
-  task: string,
+export interface BuildOutcome extends TaskResult {
+  /** Threaded back to the caller so the conversation continues where the build left off. */
+  sessionId: string | null;
+}
+
+/**
+ * One conversational turn. Read-only, no gatekeeper -- this is the part that should feel like
+ * an ordinary chat.
+ */
+export async function runChat(
+  message: string,
   config: ArenaConfig,
   emit: (event: ArenaEvent) => void,
-): Promise<TaskResult> {
+  sessionId: string | null,
+): Promise<string | null> {
+  emit({ type: "user.message", text: message });
+  emit({ type: "phase", phase: "chatting", round: 1 });
+  try {
+    const turn = await builder.chat(message, config, emit, sessionId);
+    emit({ type: "session", sessionId: turn.sessionId });
+    return turn.sessionId;
+  } catch (error) {
+    emit({
+      type: "log",
+      level: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return sessionId;
+  }
+}
+
+/**
+ * The pipeline, entered when the engineer decides to build.
+ *
+ * `instruction` is optional: with an open conversation behind it, "build what we discussed"
+ * is usually enough, and forcing the user to restate it invites them to restate it *wrong*.
+ */
+export async function runBuild(
+  config: ArenaConfig,
+  emit: (event: ArenaEvent) => void,
+  sessionId: string | null,
+  instruction?: string,
+): Promise<BuildOutcome> {
   const git = new Git(config.projectDir);
   const gate = new Gatekeeper(config);
   const rounds: RoundRecord[] = [];
 
   let plan: string | null = null;
   let builderUsd = 0;
-  let sessionId: string | null = null;
+  let session = sessionId;
 
   const cost = () => ({
     builderUsd,
@@ -36,13 +81,22 @@ export async function runTask(
     gatekeeperOutputTokens: gate.outputTokens,
   });
 
-  const finish = async (
+  const finish = (
     phase: TaskResult["phase"],
     diff: string,
     error?: string,
-  ): Promise<TaskResult> => {
-    const result: TaskResult = { phase, plan, rounds, diff, cost: cost(), ...(error ? { error } : {}) };
+  ): BuildOutcome => {
+    const result: BuildOutcome = {
+      phase,
+      plan,
+      rounds,
+      diff,
+      cost: cost(),
+      sessionId: session,
+      ...(error ? { error } : {}),
+    };
     emit({ type: "cost", cost: result.cost });
+    emit({ type: "session", sessionId: session });
     emit({ type: "done", result });
     return result;
   };
@@ -52,83 +106,79 @@ export async function runTask(
       return finish("failed", "", `${config.projectDir} is not a git repository`);
     }
 
-    const baseline = await git.snapshot("task-start");
-    emit({ type: "snapshot", ref: baseline, label: "task-start" });
+    const baseline = await git.snapshot("build-start");
+    emit({ type: "snapshot", ref: baseline, label: "build-start" });
 
     // ---- Phase 1: plan, reviewed before anything is written -------------------------
-    if (!config.skipPlanReview) {
-      let round = 1;
-      for (;;) {
-        emit({ type: "phase", phase: "planning", round });
-        const turn: BuilderTurn =
-          plan === null
-            ? await builder.plan(task, config, emit)
-            : await builder.replan(
-                task,
-                plan,
-                rounds.at(-1)!.review.findings,
-                rounds.at(-1)!.review.summary,
-                config,
-                emit,
-                sessionId,
-              );
-        builderUsd += turn.costUsd;
-        sessionId = turn.sessionId;
-        const currentPlan = turn.text;
-        plan = currentPlan;
+    let round = 1;
+    for (;;) {
+      emit({ type: "phase", phase: "planning", round });
+      const turn: BuilderTurn =
+        round === 1
+          ? await builder.plan(config, emit, session, instruction)
+          : await builder.replan(
+              rounds.at(-1)!.review.findings,
+              rounds.at(-1)!.review.summary,
+              config,
+              emit,
+              session,
+            );
+      builderUsd += turn.costUsd;
+      session = turn.sessionId;
+      const currentPlan = turn.text;
+      plan = currentPlan;
 
-        emit({ type: "phase", phase: "plan_review", round });
-        const review = await gate.reviewPlan(task, currentPlan, emit);
-        rounds.push({ round, phase: "plan_review", review, snapshot: baseline });
-        emit({ type: "review", phase: "plan_review", review });
+      if (config.skipPlanReview) break;
 
-        if (review.verdict === "approve") break;
-        if (round >= config.maxRounds) {
-          emit({
-            type: "log",
-            level: "warn",
-            message: `Plan still rejected after ${round} rounds -- escalating.`,
-          });
-          return finish("escalated", "");
-        }
-        round += 1;
+      emit({ type: "phase", phase: "plan_review", round });
+      const review = await gate.reviewPlan(instruction ?? "(see the plan)", currentPlan, emit);
+      rounds.push({ round, phase: "plan_review", review, snapshot: baseline });
+      emit({ type: "review", phase: "plan_review", review });
+
+      if (review.verdict === "approve") break;
+      if (round >= config.maxRounds) {
+        emit({
+          type: "log",
+          level: "warn",
+          message: `Plan still rejected after ${round} rounds — escalating. Nothing was written.`,
+        });
+        return finish("escalated", "");
       }
-    } else {
-      plan = "(plan review skipped by configuration)";
+      round += 1;
     }
 
     // ---- Phase 2: implement, reviewed as a diff -------------------------------------
-    // The builder starts a fresh session here: plan mode and write mode are different jobs,
-    // and a clean session keeps the plan-round back-and-forth out of the implementation
-    // context. Revision rounds then resume *this* session.
-    sessionId = null;
-    let round = 1;
-    let lastSnapshot = baseline;
-
+    round = 1;
     for (;;) {
       emit({ type: "phase", phase: "implementing", round });
       const turn: BuilderTurn =
         round === 1
-          ? await builder.implement(task, plan!, config, emit, null)
+          ? await builder.implement(config, emit, session)
           : await builder.revise(
               rounds.at(-1)!.review.findings,
               rounds.at(-1)!.review.summary,
               config,
               emit,
-              sessionId,
+              session,
             );
       builderUsd += turn.costUsd;
-      sessionId = turn.sessionId;
+      session = turn.sessionId;
 
-      lastSnapshot = await git.snapshot(`round-${round}`);
-      emit({ type: "snapshot", ref: lastSnapshot, label: `round-${round}` });
+      const snapshot = await git.snapshot(`round-${round}`);
+      emit({ type: "snapshot", ref: snapshot, label: `round-${round}` });
 
-      const diff = await git.diff(baseline, lastSnapshot);
-      const changed = await git.changedFiles(baseline, lastSnapshot);
+      const diff = await git.diff(baseline, snapshot);
+      const changed = await git.changedFiles(baseline, snapshot);
 
       emit({ type: "phase", phase: "diff_review", round });
-      const review = await gate.reviewDiff(task, plan!, diff, changed, emit);
-      rounds.push({ round, phase: "diff_review", review, snapshot: lastSnapshot });
+      const review = await gate.reviewDiff(
+        instruction ?? "(see the plan)",
+        plan!,
+        diff,
+        changed,
+        emit,
+      );
+      rounds.push({ round, phase: "diff_review", review, snapshot });
       emit({ type: "review", phase: "diff_review", review });
 
       if (review.verdict === "approve") {
@@ -140,9 +190,8 @@ export async function runTask(
           type: "log",
           level: "warn",
           message:
-            `Diff still rejected after ${round} rounds -- escalating. ` +
-            `The changes are left in the working tree; snapshot ${baseline.slice(0, 8)} is the ` +
-            `pre-task state if you want to roll back.`,
+            `Diff still rejected after ${round} rounds — escalating. The changes are left in ` +
+            `the working tree; snapshot ${baseline.slice(0, 8)} is the pre-build state.`,
         });
         return finish("escalated", diff);
       }

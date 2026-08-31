@@ -34,6 +34,14 @@ const deny = (reason: string): Decision => ({ allow: false, reason });
 
 export interface PolicyOptions {
   projectDir: string;
+  /**
+   * Read-only mode: nothing may be modified at all.
+   *
+   * Used while the user is still talking to the builder, before any decision has been made.
+   * Denying Write/Edit is not sufficient -- bash writes too, via redirects, `sed -i`, `rm`,
+   * `tee` and friends -- so those are denied here as well.
+   */
+  readOnly?: boolean;
   /** Let the builder manage git history itself. Breaks rollback; off by default. */
   allowGitWrites?: boolean;
   /** Let the builder run publish/release commands. Off by default. */
@@ -125,6 +133,45 @@ const PUBLISH: Array<{ match: (argv: string[]) => boolean; what: string }> = [
   { match: (a) => basename(a[0]!) === "twine" && a[1] === "upload", what: "a PyPI upload" },
 ];
 
+/** Commands that modify the filesystem. Denied in read-only mode. */
+const MUTATING_COMMANDS = new Set([
+  "rm", "rmdir", "mv", "cp", "touch", "mkdir", "ln", "install", "truncate", "shred",
+  "chmod", "chown", "chgrp", "dd", "tee", "patch", "unzip", "tar",
+]);
+
+/** `sed -i` and `perl -i` edit in place; without -i they are read-only filters. */
+function editsInPlace(argv: string[]): boolean {
+  const cmd = basename(argv[0] ?? "");
+  if (cmd !== "sed" && cmd !== "perl" && cmd !== "ruby") return false;
+  return argv.slice(1).some((a) => a === "-i" || (a.startsWith("-i") && !a.startsWith("--")));
+}
+
+/** An unquoted `>` or `>>` writes a file. The tokeniser drops these, so check the raw text. */
+function hasRedirect(raw: string): boolean {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (quote) {
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    // `2>&1` merges descriptors and writes nothing; `>file` and `>>file` do.
+    if (c === ">") {
+      const next = raw[i + 1] === ">" ? raw[i + 2] : raw[i + 1];
+      if (next !== "&") return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------------------
 // paths
 
@@ -182,7 +229,14 @@ export class Policy {
     switch (toolName) {
       case "Write":
       case "Edit":
+      case "MultiEdit":
       case "NotebookEdit": {
+        if (this.options.readOnly) {
+          return deny(
+            `${toolName} modifies files. Nothing is written until you decide to build — ` +
+              `we are still talking it through.`,
+          );
+        }
         const raw = (obj.file_path ?? obj.notebook_path) as string | undefined;
         if (typeof raw !== "string") return ALLOW;
         const abs = this.resolve(raw);
@@ -231,6 +285,21 @@ export class Policy {
   private checkSegment(segment: Segment): Decision {
     const argv = segment.argv;
     const cmd = basename(argv[0] ?? "");
+
+    if (this.options.readOnly) {
+      if (MUTATING_COMMANDS.has(cmd)) {
+        return deny(
+          `\`${cmd}\` modifies the filesystem. Nothing is written until you decide to ` +
+            `build — we are still talking it through.`,
+        );
+      }
+      if (editsInPlace(argv)) {
+        return deny(`\`${cmd} -i\` edits files in place; nothing is written yet.`);
+      }
+      if (hasRedirect(segment.raw)) {
+        return deny(`That command redirects output into a file; nothing is written yet.`);
+      }
+    }
 
     const denied = DENIED_COMMANDS.get(cmd);
     if (denied) return deny(`\`${cmd}\` ${denied}; it is not available to the builder.`);

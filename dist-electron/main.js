@@ -343,7 +343,8 @@ function splitTopLevel(input) {
       continue;
     }
     if (depth === 0) {
-      const op = OPERATORS.find((o) => input.startsWith(o, i));
+      const isDescriptorDup = c === "&" && !input.startsWith("&&", i) && current.trimEnd().endsWith(">");
+      const op = isDescriptorDup ? void 0 : OPERATORS.find((o) => input.startsWith(o, i));
       if (op) {
         parts.push(current);
         current = "";
@@ -588,6 +589,54 @@ var PUBLISH = [
   { match: (a) => basename(a[0]) === "cargo" && a[1] === "publish", what: "cargo publish" },
   { match: (a) => basename(a[0]) === "twine" && a[1] === "upload", what: "a PyPI upload" }
 ];
+var MUTATING_COMMANDS = /* @__PURE__ */ new Set([
+  "rm",
+  "rmdir",
+  "mv",
+  "cp",
+  "touch",
+  "mkdir",
+  "ln",
+  "install",
+  "truncate",
+  "shred",
+  "chmod",
+  "chown",
+  "chgrp",
+  "dd",
+  "tee",
+  "patch",
+  "unzip",
+  "tar"
+]);
+function editsInPlace(argv) {
+  const cmd = basename(argv[0] ?? "");
+  if (cmd !== "sed" && cmd !== "perl" && cmd !== "ruby") return false;
+  return argv.slice(1).some((a) => a === "-i" || a.startsWith("-i") && !a.startsWith("--"));
+}
+function hasRedirect(raw) {
+  let quote = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (c === ">") {
+      const next = raw[i + 1] === ">" ? raw[i + 2] : raw[i + 1];
+      if (next !== "&") return true;
+    }
+  }
+  return false;
+}
 var SENSITIVE_DIRS = [".ssh", ".aws", ".gnupg", ".config/gcloud", ".kube"];
 var SENSITIVE_FILES = [".codex/auth.json", ".claude/.credentials.json", ".netrc", ".npmrc", ".pypirc"];
 function expandHome(p) {
@@ -625,7 +674,13 @@ var Policy = class {
     switch (toolName) {
       case "Write":
       case "Edit":
+      case "MultiEdit":
       case "NotebookEdit": {
+        if (this.options.readOnly) {
+          return deny(
+            `${toolName} modifies files. Nothing is written until you decide to build \u2014 we are still talking it through.`
+          );
+        }
         const raw = obj.file_path ?? obj.notebook_path;
         if (typeof raw !== "string") return ALLOW;
         const abs = this.resolve(raw);
@@ -666,6 +721,19 @@ var Policy = class {
   checkSegment(segment) {
     const argv = segment.argv;
     const cmd = basename(argv[0] ?? "");
+    if (this.options.readOnly) {
+      if (MUTATING_COMMANDS.has(cmd)) {
+        return deny(
+          `\`${cmd}\` modifies the filesystem. Nothing is written until you decide to build \u2014 we are still talking it through.`
+        );
+      }
+      if (editsInPlace(argv)) {
+        return deny(`\`${cmd} -i\` edits files in place; nothing is written yet.`);
+      }
+      if (hasRedirect(segment.raw)) {
+        return deny(`That command redirects output into a file; nothing is written yet.`);
+      }
+    }
     const denied = DENIED_COMMANDS.get(cmd);
     if (denied) return deny(`\`${cmd}\` ${denied}; it is not available to the builder.`);
     if (!this.options.allowPublish) {
@@ -699,17 +767,43 @@ var Policy = class {
 
 // src/core/builder.ts
 var MUTATING_TOOLS = /* @__PURE__ */ new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
-var PLAN_PREAMBLE = `You are the implementer on a two-model team. Another model reviews
-everything you produce before it is accepted, and it can see the repository.
+var SILENCE_TIMEOUT_MS = 15e4;
+var ACCOUNT_FAILURES = [
+  /credit balance is too low/i,
+  /insufficient credits?/i,
+  /quota (has been )?exceeded/i,
+  /rate limit(ed)? exceeded/i,
+  /usage limit reached/i,
+  /invalid api key/i,
+  /authentication[_ ]error/i,
+  /please run .?claude.? to (log ?in|authenticate)/i
+];
+function accountFailure(result, turns) {
+  const text = result.trim();
+  if (turns > 1 || text.length > 300) return null;
+  return ACCOUNT_FAILURES.some((p) => p.test(text)) ? `Builder could not run \u2014 the account reported: "${text}"` : null;
+}
+var CHAT_SYSTEM = `You are the implementer on a two-model team, currently in conversation
+with the engineer. Nothing you say here is being built yet.
 
-Produce an implementation plan. Be specific about which files you will create or modify and
-what each change does. State the assumptions you are making and any part of the request that
-is ambiguous -- the reviewer will check those first. Do not write the code yet.`;
-var IMPLEMENT_PREAMBLE = `You are the implementer on a two-model team. Implement the approved
-plan now. Match the conventions of the surrounding code. When you are done, state briefly what
-you changed and anything you deliberately left out.`;
+You cannot modify anything, by design. Read the code, answer the question, and say what you
+would actually do. If the request is ambiguous or you think the premise is wrong, say so now
+-- this conversation is exactly where that belongs, and it is cheaper than being told by the
+reviewer later.
+
+Do not produce an implementation plan unless asked. The engineer decides when to build.`;
+var PLAN_PREAMBLE = `The engineer has decided to build what you just discussed. Write the
+implementation plan now.
+
+A second model reviews this plan before you touch a single file, and it can read the
+repository. Be specific about which files you will create or modify and what each change
+does. State your assumptions and anything still ambiguous -- the reviewer checks those first.
+Do not write the code yet.`;
+var BUILD_PREAMBLE = `Your plan was approved. Implement it now. Match the conventions of the
+surrounding code. When you are done, say briefly what you changed and anything you
+deliberately left out.`;
 var REVISE_PREAMBLE = `The reviewer rejected your work. Address every blocker and major
-finding below. If you believe a finding is wrong, fix nothing for that one but say so
+finding below. If you believe a finding is wrong, change nothing for that one but say so
 explicitly and explain why -- do not silently ignore it.`;
 function renderFindings(findings) {
   if (findings.length === 0) return "(no itemised findings)";
@@ -724,40 +818,43 @@ function renderFindings(findings) {
   }).join("\n\n");
 }
 async function drive(prompt, config, emit, opts) {
+  const readOnly = opts.mode !== "build";
   const policy = new Policy({
     projectDir: config.projectDir,
+    readOnly,
     ...config.allowGitWrites !== void 0 ? { allowGitWrites: config.allowGitWrites } : {},
     ...config.allowPublish !== void 0 ? { allowPublish: config.allowPublish } : {}
   });
   let text = "";
-  let sessionId = opts.resume ?? null;
+  let sessionId = opts.resume;
   let costUsd = 0;
   let denials = 0;
+  const abort = new AbortController();
   const response = query({
     prompt,
     options: {
+      abortController: abort,
       cwd: config.projectDir,
       ...config.builderModel ? { model: config.builderModel } : {},
-      permissionMode: opts.plan ? "plan" : "default",
+      permissionMode: opts.mode === "plan" ? "plan" : "default",
       ...opts.resume ? { resume: opts.resume } : {},
       ...config.maxBudgetUsd !== void 0 ? { maxBudgetUsd: config.maxBudgetUsd } : {},
-      systemPrompt: { type: "preset", preset: "claude_code" },
-      // Layer 1: kernel-enforced isolation.
+      systemPrompt: opts.mode === "chat" ? { type: "preset", preset: "claude_code", append: CHAT_SYSTEM } : { type: "preset", preset: "claude_code" },
+      // Layer 1: kernel-enforced isolation. OFF BY DEFAULT -- it hangs.
       //
-      // Deliberately NOT setting `autoAllowBashIfSandboxed`. It sounds like a convenience,
-      // but auto-approved calls bypass `canUseTool` entirely -- which would silently disable
-      // Layer 2 below, including the git-history rule that rollback depends on. The sandbox
-      // and the policy have to both run, so every bash call must fall through to the prompt
-      // path that invokes our callback.
-      ...config.sandbox === false ? {} : { sandbox: { enabled: true } },
-      // Layer 2: CodeArena adjudicates every call the permission flow would have prompted
-      // a human for. Denials carry a reason so the model adapts instead of retrying.
+      // Measured on claude-agent-sdk 0.1.77 / macOS 25.6: with `sandbox: { enabled: true }`,
+      // query() emits system:init at ~0.6s and then never yields another message. The same
+      // call without it returns in 3.7s. Worse, the hang swallows account-level errors, so a
+      // failed run is indistinguishable from a slow one.
+      ...config.sandbox === true ? { sandbox: { enabled: true } } : {},
+      // Layer 2: CodeArena adjudicates every call the permission flow would have prompted a
+      // human for. Denials carry a reason so the model adapts instead of retrying.
       canUseTool: async (request) => {
         const name = request.tool_name ?? "unknown";
         const input = request.input ?? {};
-        if (opts.plan && MUTATING_TOOLS.has(name)) {
+        if (readOnly && MUTATING_TOOLS.has(name)) {
           denials += 1;
-          const reason = `${name} modifies files; the planning phase is read-only.`;
+          const reason = opts.mode === "chat" ? `${name} modifies files. We are still talking \u2014 nothing is written until you decide to build.` : `${name} modifies files; the planning phase is read-only.`;
           emit({ type: "builder.permission", name, decision: "deny", reason });
           return { behavior: "deny", message: reason };
         }
@@ -772,39 +869,62 @@ async function drive(prompt, config, emit, opts) {
       }
     }
   });
-  for await (const message of response) {
-    if (message.type === "assistant") {
-      for (const block of message.message.content) {
-        if (block.type === "text") {
-          text += block.text;
-          emit({ type: "builder.text", text: block.text });
-        } else if (block.type === "tool_use") {
-          emit({ type: "builder.tool", name: block.name, input: block.input });
+  let lastMessageAt = Date.now();
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastMessageAt > SILENCE_TIMEOUT_MS) {
+      clearInterval(watchdog);
+      emit({
+        type: "log",
+        level: "error",
+        message: `Builder produced nothing for ${SILENCE_TIMEOUT_MS / 1e3}s; aborting. If the OS sandbox is enabled, that is the first thing to suspect.`
+      });
+      abort.abort();
+    }
+  }, 5e3);
+  try {
+    for await (const message of response) {
+      lastMessageAt = Date.now();
+      if (message.type === "assistant") {
+        for (const block of message.message.content) {
+          if (block.type === "text") {
+            text += block.text;
+            emit({ type: "builder.text", text: block.text });
+          } else if (block.type === "tool_use") {
+            emit({ type: "builder.tool", name: block.name, input: block.input });
+          }
+        }
+      } else if (message.type === "system" && message.subtype === "init") {
+        sessionId = message.session_id;
+      } else if (message.type === "result") {
+        costUsd = message.total_cost_usd;
+        sessionId = message.session_id;
+        if (message.subtype === "success") {
+          const failure = accountFailure(message.result, message.num_turns);
+          if (failure) throw new Error(failure);
+          text = message.result;
+        } else {
+          throw new Error(
+            `Builder ended with ${message.subtype}: ${message.errors?.join("; ") ?? "no detail"}`
+          );
         }
       }
-    } else if (message.type === "system" && message.subtype === "init") {
-      sessionId = message.session_id;
-    } else if (message.type === "result") {
-      costUsd = message.total_cost_usd;
-      sessionId = message.session_id;
-      if (message.subtype === "success") {
-        text = message.result;
-      } else {
-        throw new Error(
-          `Builder ended with ${message.subtype}: ${message.errors?.join("; ") ?? "no detail"}`
-        );
-      }
     }
+  } finally {
+    clearInterval(watchdog);
   }
   return { text, sessionId, costUsd, denials };
 }
-function plan(task, config, emit) {
-  return drive(`${PLAN_PREAMBLE}
-
---- TASK ---
-${task}`, config, emit, { plan: true });
+function chat(message, config, emit, sessionId) {
+  return drive(message, config, emit, { mode: "chat", resume: sessionId });
 }
-function replan(task, previousPlan, findings, summary, config, emit, sessionId) {
+function plan(config, emit, sessionId, instruction) {
+  const prompt = instruction ? `${PLAN_PREAMBLE}
+
+--- WHAT TO BUILD ---
+${instruction}` : PLAN_PREAMBLE;
+  return drive(prompt, config, emit, { mode: "plan", resume: sessionId });
+}
+function replan(findings, summary, config, emit, sessionId) {
   const prompt = [
     REVISE_PREAMBLE,
     "",
@@ -814,25 +934,12 @@ function replan(task, previousPlan, findings, summary, config, emit, sessionId) 
     "--- FINDINGS ---",
     renderFindings(findings),
     "",
-    "Produce the corrected plan. Still do not write code.",
-    "",
-    "--- ORIGINAL TASK ---",
-    task,
-    ...sessionId ? [] : ["", "--- YOUR PREVIOUS PLAN ---", previousPlan]
+    "Produce the corrected plan. Still do not write code."
   ].join("\n");
-  return drive(prompt, config, emit, { plan: true, resume: sessionId });
+  return drive(prompt, config, emit, { mode: "plan", resume: sessionId });
 }
-function implement(task, approvedPlan, config, emit, sessionId) {
-  const prompt = [
-    IMPLEMENT_PREAMBLE,
-    "",
-    "--- TASK ---",
-    task,
-    "",
-    "--- APPROVED PLAN ---",
-    approvedPlan
-  ].join("\n");
-  return drive(prompt, config, emit, { plan: false, resume: sessionId });
+function implement(config, emit, sessionId) {
+  return drive(BUILD_PREAMBLE, config, emit, { mode: "build", resume: sessionId });
 }
 function revise(findings, summary, config, emit, sessionId) {
   const prompt = [
@@ -844,26 +951,51 @@ function revise(findings, summary, config, emit, sessionId) {
     "--- FINDINGS ---",
     renderFindings(findings)
   ].join("\n");
-  return drive(prompt, config, emit, { plan: false, resume: sessionId });
+  return drive(prompt, config, emit, { mode: "build", resume: sessionId });
 }
 
 // src/core/orchestrator.ts
-async function runTask(task, config, emit) {
+async function runChat(message, config, emit, sessionId) {
+  emit({ type: "user.message", text: message });
+  emit({ type: "phase", phase: "chatting", round: 1 });
+  try {
+    const turn = await chat(message, config, emit, sessionId);
+    emit({ type: "session", sessionId: turn.sessionId });
+    return turn.sessionId;
+  } catch (error) {
+    emit({
+      type: "log",
+      level: "error",
+      message: error instanceof Error ? error.message : String(error)
+    });
+    return sessionId;
+  }
+}
+async function runBuild(config, emit, sessionId, instruction) {
   const git = new Git(config.projectDir);
   const gate = new Gatekeeper(config);
   const rounds = [];
   let plan2 = null;
   let builderUsd = 0;
-  let sessionId = null;
+  let session2 = sessionId;
   const cost = () => ({
     builderUsd,
     gatekeeperInputTokens: gate.inputTokens,
     gatekeeperCachedInputTokens: gate.cachedInputTokens,
     gatekeeperOutputTokens: gate.outputTokens
   });
-  const finish = async (phase, diff, error) => {
-    const result = { phase, plan: plan2, rounds, diff, cost: cost(), ...error ? { error } : {} };
+  const finish = (phase, diff, error) => {
+    const result = {
+      phase,
+      plan: plan2,
+      rounds,
+      diff,
+      cost: cost(),
+      sessionId: session2,
+      ...error ? { error } : {}
+    };
     emit({ type: "cost", cost: result.cost });
+    emit({ type: "session", sessionId: session2 });
     emit({ type: "done", result });
     return result;
   };
@@ -871,64 +1003,63 @@ async function runTask(task, config, emit) {
     if (!await git.isRepo()) {
       return finish("failed", "", `${config.projectDir} is not a git repository`);
     }
-    const baseline = await git.snapshot("task-start");
-    emit({ type: "snapshot", ref: baseline, label: "task-start" });
-    if (!config.skipPlanReview) {
-      let round2 = 1;
-      for (; ; ) {
-        emit({ type: "phase", phase: "planning", round: round2 });
-        const turn = plan2 === null ? await plan(task, config, emit) : await replan(
-          task,
-          plan2,
-          rounds.at(-1).review.findings,
-          rounds.at(-1).review.summary,
-          config,
-          emit,
-          sessionId
-        );
-        builderUsd += turn.costUsd;
-        sessionId = turn.sessionId;
-        const currentPlan = turn.text;
-        plan2 = currentPlan;
-        emit({ type: "phase", phase: "plan_review", round: round2 });
-        const review = await gate.reviewPlan(task, currentPlan, emit);
-        rounds.push({ round: round2, phase: "plan_review", review, snapshot: baseline });
-        emit({ type: "review", phase: "plan_review", review });
-        if (review.verdict === "approve") break;
-        if (round2 >= config.maxRounds) {
-          emit({
-            type: "log",
-            level: "warn",
-            message: `Plan still rejected after ${round2} rounds -- escalating.`
-          });
-          return finish("escalated", "");
-        }
-        round2 += 1;
-      }
-    } else {
-      plan2 = "(plan review skipped by configuration)";
-    }
-    sessionId = null;
+    const baseline = await git.snapshot("build-start");
+    emit({ type: "snapshot", ref: baseline, label: "build-start" });
     let round = 1;
-    let lastSnapshot = baseline;
     for (; ; ) {
-      emit({ type: "phase", phase: "implementing", round });
-      const turn = round === 1 ? await implement(task, plan2, config, emit, null) : await revise(
+      emit({ type: "phase", phase: "planning", round });
+      const turn = round === 1 ? await plan(config, emit, session2, instruction) : await replan(
         rounds.at(-1).review.findings,
         rounds.at(-1).review.summary,
         config,
         emit,
-        sessionId
+        session2
       );
       builderUsd += turn.costUsd;
-      sessionId = turn.sessionId;
-      lastSnapshot = await git.snapshot(`round-${round}`);
-      emit({ type: "snapshot", ref: lastSnapshot, label: `round-${round}` });
-      const diff = await git.diff(baseline, lastSnapshot);
-      const changed = await git.changedFiles(baseline, lastSnapshot);
+      session2 = turn.sessionId;
+      const currentPlan = turn.text;
+      plan2 = currentPlan;
+      if (config.skipPlanReview) break;
+      emit({ type: "phase", phase: "plan_review", round });
+      const review = await gate.reviewPlan(instruction ?? "(see the plan)", currentPlan, emit);
+      rounds.push({ round, phase: "plan_review", review, snapshot: baseline });
+      emit({ type: "review", phase: "plan_review", review });
+      if (review.verdict === "approve") break;
+      if (round >= config.maxRounds) {
+        emit({
+          type: "log",
+          level: "warn",
+          message: `Plan still rejected after ${round} rounds \u2014 escalating. Nothing was written.`
+        });
+        return finish("escalated", "");
+      }
+      round += 1;
+    }
+    round = 1;
+    for (; ; ) {
+      emit({ type: "phase", phase: "implementing", round });
+      const turn = round === 1 ? await implement(config, emit, session2) : await revise(
+        rounds.at(-1).review.findings,
+        rounds.at(-1).review.summary,
+        config,
+        emit,
+        session2
+      );
+      builderUsd += turn.costUsd;
+      session2 = turn.sessionId;
+      const snapshot = await git.snapshot(`round-${round}`);
+      emit({ type: "snapshot", ref: snapshot, label: `round-${round}` });
+      const diff = await git.diff(baseline, snapshot);
+      const changed = await git.changedFiles(baseline, snapshot);
       emit({ type: "phase", phase: "diff_review", round });
-      const review = await gate.reviewDiff(task, plan2, diff, changed, emit);
-      rounds.push({ round, phase: "diff_review", review, snapshot: lastSnapshot });
+      const review = await gate.reviewDiff(
+        instruction ?? "(see the plan)",
+        plan2,
+        diff,
+        changed,
+        emit
+      );
+      rounds.push({ round, phase: "diff_review", review, snapshot });
       emit({ type: "review", phase: "diff_review", review });
       if (review.verdict === "approve") {
         emit({ type: "phase", phase: "approved", round });
@@ -938,7 +1069,7 @@ async function runTask(task, config, emit) {
         emit({
           type: "log",
           level: "warn",
-          message: `Diff still rejected after ${round} rounds -- escalating. The changes are left in the working tree; snapshot ${baseline.slice(0, 8)} is the pre-task state if you want to roll back.`
+          message: `Diff still rejected after ${round} rounds \u2014 escalating. The changes are left in the working tree; snapshot ${baseline.slice(0, 8)} is the pre-build state.`
         });
         return finish("escalated", diff);
       }
@@ -1019,6 +1150,23 @@ async function resolveCodex() {
 
 // src/core/fixture.ts
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var USER_1 = `average() is returning NaN somewhere in the report pipeline. is that our bug or the caller's?`;
+var REPLY_1 = `Ours. \`average([])\` computes \`0 / 0\`, which is \`NaN\` \u2014 it never throws, so the
+bad input propagates silently until something downstream formats it.
+
+\`divide\` has the same shape: \`divide(1, 0)\` returns \`Infinity\` rather than rejecting.
+README.md says bad input should throw \`TypeError\`, so neither function currently follows the
+convention the repo states.
+
+Worth deciding: do you want them to throw, or to return a sentinel the caller checks? Throwing
+matches the README, but it will surface as an exception in the report pipeline rather than a
+\`NaN\` \u2014 that is a behaviour change for whatever calls it today.`;
+var USER_2 = `throw. the NaN is exactly the problem \u2014 I want it loud.`;
+var REPLY_2 = `Agreed, and it is the smaller change. Both guards go at the top of their
+function, before any arithmetic, and both throw \`TypeError\` naming the offending argument.
+
+One thing to watch: \`average\` currently divides inline rather than calling \`divide\`, so
+guarding \`divide\` alone would not cover it.`;
 var PLAN = `I'll add input guards to both functions, following the TypeError convention the README states.
 
 **calc.js**
@@ -1070,10 +1218,18 @@ function stream(text) {
 }
 async function replayFixture(emit) {
   const steps = [
-    { event: { type: "snapshot", ref: "5365c7fc9a1b4e2d", label: "task-start" }, after: 300 },
+    // --- conversation: read-only, no gatekeeper, no decision made yet ------------------
+    { event: { type: "user.message", text: USER_1 }, after: 500 },
+    { event: { type: "phase", phase: "chatting", round: 1 }, after: 400 },
+    { event: { type: "builder.tool", name: "Read", input: { file_path: "calc.js" } }, after: 350 },
+    ...stream(REPLY_1),
+    { event: { type: "user.message", text: USER_2 }, after: 1100 },
+    { event: { type: "phase", phase: "chatting", round: 1 }, after: 400 },
+    ...stream(REPLY_2),
+    // --- the engineer presses "Build this". Only now does anything happen. ------------
+    { event: { type: "snapshot", ref: "5365c7fc9a1b4e2d", label: "build-start" }, after: 900 },
     { event: { type: "phase", phase: "planning", round: 1 }, after: 500 },
     { event: { type: "builder.tool", name: "Read", input: { file_path: "README.md" } }, after: 350 },
-    { event: { type: "builder.tool", name: "Read", input: { file_path: "calc.js" } }, after: 400 },
     ...stream(PLAN),
     { event: { type: "phase", phase: "plan_review", round: 1 }, after: 600 },
     { event: { type: "gatekeeper.item", kind: "command", text: "sed -n '1,240p' README.md" }, after: 500 },
@@ -1173,6 +1329,8 @@ var exec3 = promisify3(execFile3);
 var dirname = path3.dirname(fileURLToPath(import.meta.url));
 var win = null;
 var running = false;
+var session = null;
+var projectOfSession = "";
 function createWindow() {
   win = new BrowserWindow({
     width: 1180,
@@ -1195,6 +1353,7 @@ function createWindow() {
       running = true;
       void replayFixture((e) => target.send("arena:event", e)).finally(() => {
         running = false;
+        target.send("arena:idle", true);
       });
     });
   }
@@ -1265,35 +1424,70 @@ ipcMain.handle("arena:pickProject", async () => {
   });
   return result.canceled ? null : result.filePaths[0] ?? null;
 });
+function ensureProject(projectDir) {
+  if (projectOfSession !== projectDir) {
+    session = null;
+    projectOfSession = projectDir;
+  }
+}
+function configFor(opts, codexPath) {
+  return {
+    projectDir: opts.projectDir,
+    maxRounds: opts.maxRounds,
+    skipPlanReview: opts.skipPlanReview,
+    codexPath
+  };
+}
 ipcMain.handle(
-  "arena:start",
+  "arena:chat",
   async (event, opts) => {
-    if (running) return { started: false, reason: "A task is already running." };
+    if (running) return { started: false, reason: "Still working on the previous turn." };
+    ensureProject(opts.projectDir);
     const send = (e) => event.sender.send("arena:event", e);
-    if (opts.demo) {
-      running = true;
-      replayFixture(send).catch((e) => send({ type: "log", level: "error", message: String(e) })).finally(() => {
-        running = false;
-      });
-      return { started: true };
-    }
     const codex = await resolveCodex();
-    if (!codex?.loggedIn) {
-      return { started: false, reason: "Gatekeeper unavailable \u2014 check Setup." };
-    }
-    const config = {
-      projectDir: opts.projectDir,
-      maxRounds: opts.maxRounds,
-      skipPlanReview: opts.skipPlanReview,
-      codexPath: codex.path
-    };
     running = true;
-    runTask(opts.task, config, send).catch((e) => send({ type: "log", level: "error", message: String(e?.message ?? e) })).finally(() => {
+    void runChat(opts.message, configFor(opts, codex?.path ?? ""), send, session).then((next) => {
+      session = next;
+    }).finally(() => {
       running = false;
+      event.sender.send("arena:idle", true);
     });
     return { started: true };
   }
 );
+ipcMain.handle(
+  "arena:build",
+  async (event, opts) => {
+    if (running) return { started: false, reason: "Still working on the previous turn." };
+    const send = (e) => event.sender.send("arena:event", e);
+    if (opts.demo) {
+      running = true;
+      void replayFixture(send).catch((e) => send({ type: "log", level: "error", message: String(e) })).finally(() => {
+        running = false;
+        event.sender.send("arena:idle", true);
+      });
+      return { started: true };
+    }
+    ensureProject(opts.projectDir);
+    const codex = await resolveCodex();
+    if (!codex?.loggedIn) {
+      return { started: false, reason: "Gatekeeper unavailable \u2014 check Setup." };
+    }
+    running = true;
+    void runBuild(configFor(opts, codex.path), send, session, opts.instruction).then((outcome) => {
+      session = outcome.sessionId;
+    }).catch(
+      (e) => send({ type: "log", level: "error", message: String(e?.message ?? e) })
+    ).finally(() => {
+      running = false;
+      event.sender.send("arena:idle", true);
+    });
+    return { started: true };
+  }
+);
+ipcMain.handle("arena:reset", async () => {
+  session = null;
+});
 ipcMain.handle("arena:revealDiff", async (_e, projectDir) => {
   shell.openPath(projectDir);
 });

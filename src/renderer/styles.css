@@ -249,6 +249,19 @@ body {
   border-right: 2px solid var(--gatekeeper);
 }
 
+/* The engineer's own messages: plain, no agent chrome, clearly not a model talking. */
+.card.user {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  max-width: 70%;
+  min-width: 0;
+}
+.card.user .card-body {
+  color: var(--text);
+  font-size: 13px;
+  padding: 10px 13px;
+}
+
 .card-head {
   display: flex;
   align-items: center;
@@ -477,6 +490,19 @@ body {
   display: flex;
   gap: 10px;
   align-items: flex-end;
+}
+
+.composer-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The decision. Visually the heaviest control in the window, because it is the only one
+   that lets anything be written. */
+button.build {
+  font-weight: 620;
+  letter-spacing: 0.01em;
 }
 textarea {
   flex: 1;

@@ -10,6 +10,7 @@
  */
 
 export type Phase =
+  | "chatting"
   | "planning"
   | "plan_review"
   | "implementing"
@@ -73,6 +74,8 @@ export interface TaskResult {
 /** Everything the orchestrator emits, for the CLI and later the Electron UI to render. */
 export type ArenaEvent =
   | { type: "phase"; phase: Phase; round: number }
+  | { type: "user.message"; text: string }
+  | { type: "session"; sessionId: string | null }
   | { type: "builder.text"; text: string }
   | { type: "builder.tool"; name: string; input: unknown }
   | { type: "builder.permission"; name: string; decision: "allow" | "deny"; reason?: string }
@@ -94,7 +97,7 @@ export interface ArenaConfig {
   gatekeeperModel?: string;
   /** Absolute path to a code-signed codex binary. Never the npm-vendored one. */
   codexPath: string;
-  /** Skip the plan phase and go straight to implementing. */
+  /** Skip the plan review and go straight to implementing after planning. */
   skipPlanReview?: boolean;
 
   /**

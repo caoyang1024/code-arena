@@ -15,18 +15,23 @@ interface DoctorReport {
   project: { ok: boolean; detail: string; branch?: string; dirty?: boolean };
 }
 
+interface TurnOptions {
+  projectDir: string;
+  maxRounds: number;
+  skipPlanReview: boolean;
+}
+
 interface ArenaApi {
   doctor(projectDir: string): Promise<DoctorReport>;
   pickProject(): Promise<string | null>;
-  start(opts: {
-    task: string;
-    projectDir: string;
-    maxRounds: number;
-    skipPlanReview: boolean;
-    demo?: boolean;
-  }): Promise<{ started: boolean; reason?: string }>;
+  chat(opts: TurnOptions & { message: string }): Promise<{ started: boolean; reason?: string }>;
+  build(
+    opts: TurnOptions & { instruction?: string; demo?: boolean },
+  ): Promise<{ started: boolean; reason?: string }>;
+  reset(): Promise<void>;
   revealDiff(projectDir: string): Promise<void>;
   onEvent(cb: (event: ArenaEvent) => void): () => void;
+  onIdle(cb: () => void): () => void;
 }
 
 declare global {
@@ -39,6 +44,7 @@ declare global {
 // transcript model
 
 type Block =
+  | { kind: "user"; id: number; text: string }
   | { kind: "builder"; id: number; phase: Phase; round: number; text: string; tools: string[] }
   | { kind: "gatekeeper"; id: number; phase: Phase; round: number; commands: string[]; review?: Review }
   | { kind: "denial"; id: number; name: string; reason: string }
@@ -72,11 +78,17 @@ function replaceAt(blocks: Block[], index: number, block: Block): Block[] {
 function reduce(blocks: Block[], event: ArenaEvent): Block[] {
 
   switch (event.type) {
+    case "user.message":
+      return [...blocks, { kind: "user", id: nextId++, text: event.text }];
+
     case "phase": {
       if (event.phase === "approved" || event.phase === "escalated" || event.phase === "failed") {
         return blocks;
       }
-      const isBuilder = event.phase === "planning" || event.phase === "implementing";
+      const isBuilder =
+        event.phase === "chatting" ||
+        event.phase === "planning" ||
+        event.phase === "implementing";
       return [
         ...blocks,
         isBuilder
@@ -149,6 +161,7 @@ function shortenPath(p: string): string {
 // phase rail
 
 const RAIL: Array<{ phase: Phase; label: string; side: "builder" | "gate" }> = [
+  { phase: "chatting", label: "Talking", side: "builder" },
   { phase: "planning", label: "Plan", side: "builder" },
   { phase: "plan_review", label: "Plan review", side: "gate" },
   { phase: "implementing", label: "Implement", side: "builder" },
@@ -183,6 +196,7 @@ function PhaseRail({ current, round }: { current: Phase | null; round: number })
 // blocks
 
 const PHASE_LABEL: Partial<Record<Phase, string>> = {
+  chatting: "thinking it through",
   planning: "planning",
   implementing: "implementing",
   plan_review: "reviewing the plan",
@@ -239,6 +253,15 @@ function FindingRow({ finding }: { finding: Finding }) {
 
 function BlockView({ block, projectDir }: { block: Block; projectDir: string }) {
   switch (block.kind) {
+    case "user":
+      return (
+        <div className="block right">
+          <div className="card user">
+            <div className="card-body">{block.text}</div>
+          </div>
+        </div>
+      );
+
     case "builder":
       return (
         <div className="block">
@@ -395,25 +418,30 @@ function Arena() {
   const [round, setRound] = useState(1);
   const [running, setRunning] = useState(false);
 
-  const [task, setTask] = useState("");
+  const [draft, setDraft] = useState("");
   const [maxRounds, setMaxRounds] = useState(3);
   const [skipPlanReview, setSkipPlanReview] = useState(false);
+  /** True once the conversation has something in it worth building. */
+  const [hasContext, setHasContext] = useState(false);
 
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
 
   useEffect(() => {
-    return window.arena.onEvent((event) => {
+    const offEvent = window.arena.onEvent((event) => {
       setBlocks((prev) => reduce(prev, event));
       if (event.type === "phase") {
         setPhase(event.phase);
         setRound(event.round);
       }
-      if (event.type === "done") {
-        setPhase(event.result.phase);
-        setRunning(false);
-      }
+      if (event.type === "user.message") setHasContext(true);
+      if (event.type === "done") setPhase(event.result.phase);
     });
+    const offIdle = window.arena.onIdle(() => setRunning(false));
+    return () => {
+      offEvent();
+      offIdle();
+    };
   }, []);
 
   // Follow the tail while the user is at the bottom; stop fighting them if they scroll up.
@@ -438,45 +466,78 @@ function Arena() {
 
   const pick = useCallback(async () => {
     const dir = await window.arena.pickProject();
-    if (dir) setProjectDir(dir);
+    if (dir) {
+      setProjectDir(dir);
+      // The conversation was about other code; the main process drops it too.
+      setBlocks([]);
+      setHasContext(false);
+      setPhase(null);
+    }
   }, []);
 
-  const run = useCallback(
-    async (demo = false) => {
-      if (running) return;
-      if (!demo && (!task.trim() || !projectDir)) return;
-
-      setBlocks([]);
-      setPhase(null);
-      setRound(1);
-      pinned.current = true;
-      setRunning(true);
-
-      const res = await window.arena.start({
-        task: demo ? "Make divide and average reject bad input." : task.trim(),
-        projectDir,
-        maxRounds,
-        skipPlanReview,
-        demo,
-      });
-
-      if (!res.started) {
-        setRunning(false);
-        setBlocks([
-          { kind: "note", id: nextId++, level: "error", message: res.reason ?? "Could not start." },
-        ]);
-      } else if (!demo) {
-        setTask("");
-      }
-    },
-    [running, task, projectDir, maxRounds, skipPlanReview],
+  const turnOptions = useMemo(
+    () => ({ projectDir, maxRounds, skipPlanReview }),
+    [projectDir, maxRounds, skipPlanReview],
   );
 
+  const fail = useCallback((reason: string) => {
+    setRunning(false);
+    setBlocks((prev) => [...prev, { kind: "note", id: nextId++, level: "error", message: reason }]);
+  }, []);
+
+  /** Enter sends a message. Nothing is written; this is just conversation. */
+  const send = useCallback(async () => {
+    const message = draft.trim();
+    if (running || !message || !projectDir) return;
+    setDraft("");
+    pinned.current = true;
+    setRunning(true);
+    const res = await window.arena.chat({ ...turnOptions, message });
+    if (!res.started) fail(res.reason ?? "Could not start.");
+  }, [draft, running, projectDir, turnOptions, fail]);
+
+  /**
+   * The decision. Everything up to here was read-only; this is where the gatekeeper enters
+   * and files start changing. Deliberately a separate, explicit action -- never something
+   * that happens because a message looked like an instruction.
+   */
+  const build = useCallback(
+    async (demo = false) => {
+      if (running) return;
+      if (!demo && !projectDir) return;
+      if (demo) {
+        setBlocks([]);
+        setPhase(null);
+      }
+      const instruction = draft.trim();
+      if (instruction) setDraft("");
+      pinned.current = true;
+      setRunning(true);
+      const res = await window.arena.build({
+        ...turnOptions,
+        ...(instruction ? { instruction } : {}),
+        demo,
+      });
+      if (!res.started) fail(res.reason ?? "Could not start.");
+    },
+    [running, projectDir, draft, turnOptions, fail],
+  );
+
+  const restart = useCallback(async () => {
+    if (running) return;
+    await window.arena.reset();
+    setBlocks([]);
+    setHasContext(false);
+    setPhase(null);
+  }, [running]);
+
   const ready = Boolean(doctor?.builder.ok && doctor?.gatekeeper.ok && doctor?.project.ok);
+  const building =
+    running && phase !== null && phase !== "chatting";
   const statusText = running
     ? phase && PHASE_LABEL[phase]
       ? `${PHASE_LABEL[phase]}…`
-      : "running…"
+      : "working…"
     : ready
       ? "ready"
       : "setup needed";
@@ -505,13 +566,14 @@ function Arena() {
       <div className="transcript" ref={scroller} onScroll={onScroll}>
         {blocks.length === 0 ? (
           <div className="empty">
-            <h2>Two models, one change</h2>
+            <h2>Talk first. Build when you decide.</h2>
             <p>
-              Claude plans and writes. Codex reviews the plan before a file is touched, then
-              reviews the diff — read-only, and it has to show its evidence. Describe a task
-              below, or watch a recorded run first.
+              Ask questions, read the code, argue about the approach — Claude cannot modify
+              anything while you are still deciding. When you commit, press{" "}
+              <b>Build&nbsp;this</b>: Codex reviews the plan before a file is touched, then
+              reviews the diff, and the loop repeats until it approves.
             </p>
-            <button onClick={() => run(true)} disabled={running} style={{ marginTop: 6 }}>
+            <button onClick={() => build(true)} disabled={running} style={{ marginTop: 6 }}>
               Watch a recorded run
             </button>
           </div>
@@ -541,26 +603,40 @@ function Arena() {
       <div className="composer">
         <div className="composer-row">
           <textarea
-            value={task}
+            value={draft}
             placeholder={
-              projectDir ? "Describe the change…" : "Choose a project to begin…"
+              projectDir
+                ? hasContext
+                  ? "Reply, or press Build this when you have decided…"
+                  : "What are you thinking about? Nothing gets written yet."
+                : "Choose a project to begin…"
             }
-            onChange={(e) => setTask(e.target.value)}
+            onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                void run();
+                void send();
               }
             }}
             disabled={running}
           />
-          <button
-            className="primary"
-            onClick={() => run()}
-            disabled={running || !task.trim() || !projectDir}
-          >
-            {running ? "Running…" : "Run"}
-          </button>
+          <div className="composer-actions">
+            <button onClick={() => void send()} disabled={running || !draft.trim() || !projectDir}>
+              Send
+            </button>
+            <button
+              className="primary build"
+              onClick={() => void build()}
+              disabled={running || !projectDir || (!hasContext && !draft.trim())}
+              title={
+                hasContext
+                  ? "Plan and build what you just discussed, with the gatekeeper reviewing"
+                  : "Say what you want first, or type it here and press Build this"
+              }
+            >
+              {building ? "Building…" : "Build this"}
+            </button>
+          </div>
         </div>
         <div className="composer-meta">
           <label>
@@ -584,10 +660,13 @@ function Arena() {
             review the plan first
           </label>
           <div className="spacer" />
-          <button className="link" onClick={() => setShowSetup((s) => !s)}>
+          <button className="link" onClick={() => void restart()} disabled={running}>
+            new conversation
+          </button>
+          <button className="link" onClick={() => setShowSetup((v) => !v)}>
             {showSetup ? "hide setup" : "setup"}
           </button>
-          <button className="link" onClick={() => run(true)} disabled={running}>
+          <button className="link" onClick={() => void build(true)} disabled={running}>
             demo
           </button>
         </div>

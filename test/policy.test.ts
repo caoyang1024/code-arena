@@ -115,6 +115,37 @@ expectDeny("Read", { file_path: path.join(os.homedir(), ".codex/auth.json") }, "
 expectAllow("Read", { file_path: "/usr/lib/node_modules/npm/package.json" }, "a system file that is not a credential");
 expectAllow("Read", { file_path: `${PROJECT}/src/index.ts` }, "a project file");
 
+console.log("\nread-only mode — while the user is still deciding, nothing may be written");
+{
+  const ro = new Policy({ projectDir: PROJECT, readOnly: true });
+  const check = (cond: boolean, label: string) => {
+    cond ? passed++ : failed++;
+    console.log(`  ${cond ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m"} ${label}`);
+  };
+  const denies = (cmd: string) => !ro.check("Bash", { command: cmd }).allow;
+  const allows = (cmd: string) => ro.check("Bash", { command: cmd }).allow;
+
+  check(!ro.check("Write", { file_path: `${PROJECT}/src/a.ts` }).allow, "deny  Write inside the project");
+  check(!ro.check("Edit", { file_path: `${PROJECT}/src/a.ts` }).allow, "deny  Edit inside the project");
+  check(denies("rm -rf build/"), "deny  rm");
+  check(denies("mv a.ts b.ts"), "deny  mv");
+  check(denies("mkdir -p src/new"), "deny  mkdir");
+  check(denies("sed -i '' 's/a/b/' file.ts"), "deny  sed -i (in-place edit)");
+  check(denies("echo hi > notes.txt"), "deny  > redirect");
+  check(denies("cat a.txt >> b.txt"), "deny  >> redirect");
+  check(denies("grep foo src/ | tee out.txt"), "deny  tee behind a pipe");
+  check(denies("ls && echo x > f"), "deny  redirect in a later segment");
+
+  check(allows("ls -la src/"), "allow ls");
+  check(allows("cat package.json"), "allow cat");
+  check(allows("grep -rn TODO src/"), "allow grep");
+  check(allows("git log --oneline -20"), "allow git log");
+  check(allows("sed -n '1,40p' calc.js"), "allow sed without -i (read-only filter)");
+  check(allows("npm test 2>&1"), "allow 2>&1 (merges descriptors, writes nothing)");
+  check(allows("echo \"write a > b\""), "allow > inside a quoted string");
+  check(ro.check("Read", { file_path: `${PROJECT}/src/a.ts` }).allow, "allow Read");
+}
+
 console.log("\nopt-outs");
 {
   const loose = new Policy({ projectDir: PROJECT, allowGitWrites: true, allowPublish: true });

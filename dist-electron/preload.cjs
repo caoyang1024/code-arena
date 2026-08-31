@@ -20,8 +20,19 @@ var import_electron = require("electron");
 var api = {
   doctor: (projectDir) => import_electron.ipcRenderer.invoke("arena:doctor", projectDir),
   pickProject: () => import_electron.ipcRenderer.invoke("arena:pickProject"),
-  start: (opts) => import_electron.ipcRenderer.invoke("arena:start", opts),
+  /** An ordinary conversational turn. Read-only; the gatekeeper is not involved. */
+  chat: (opts) => import_electron.ipcRenderer.invoke("arena:chat", opts),
+  /** The engineer has decided. Runs plan -> review -> implement -> review. */
+  build: (opts) => import_electron.ipcRenderer.invoke("arena:build", opts),
+  /** Forget the conversation and start fresh. */
+  reset: () => import_electron.ipcRenderer.invoke("arena:reset"),
   revealDiff: (projectDir) => import_electron.ipcRenderer.invoke("arena:revealDiff", projectDir),
+  /** Fires when a turn finishes, whatever its outcome. */
+  onIdle: (callback) => {
+    const listener = () => callback();
+    import_electron.ipcRenderer.on("arena:idle", listener);
+    return () => import_electron.ipcRenderer.removeListener("arena:idle", listener);
+  },
   /** Subscribe to the orchestrator's event stream. Returns an unsubscribe function. */
   onEvent: (callback) => {
     const listener = (_e, event) => callback(event);

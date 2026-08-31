@@ -12,6 +12,27 @@ import type { ArenaEvent, Review } from "./types.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const USER_1 = `average() is returning NaN somewhere in the report pipeline. is that our bug or the caller's?`;
+
+const REPLY_1 = `Ours. \`average([])\` computes \`0 / 0\`, which is \`NaN\` — it never throws, so the
+bad input propagates silently until something downstream formats it.
+
+\`divide\` has the same shape: \`divide(1, 0)\` returns \`Infinity\` rather than rejecting.
+README.md says bad input should throw \`TypeError\`, so neither function currently follows the
+convention the repo states.
+
+Worth deciding: do you want them to throw, or to return a sentinel the caller checks? Throwing
+matches the README, but it will surface as an exception in the report pipeline rather than a
+\`NaN\` — that is a behaviour change for whatever calls it today.`;
+
+const USER_2 = `throw. the NaN is exactly the problem — I want it loud.`;
+
+const REPLY_2 = `Agreed, and it is the smaller change. Both guards go at the top of their
+function, before any arithmetic, and both throw \`TypeError\` naming the offending argument.
+
+One thing to watch: \`average\` currently divides inline rather than calling \`divide\`, so
+guarding \`divide\` alone would not cover it.`;
+
 const PLAN = `I'll add input guards to both functions, following the TypeError convention the README states.
 
 **calc.js**
@@ -89,11 +110,20 @@ function stream(text: string): Step[] {
 
 export async function replayFixture(emit: (event: ArenaEvent) => void): Promise<void> {
   const steps: Step[] = [
-    { event: { type: "snapshot", ref: "5365c7fc9a1b4e2d", label: "task-start" }, after: 300 },
+    // --- conversation: read-only, no gatekeeper, no decision made yet ------------------
+    { event: { type: "user.message", text: USER_1 }, after: 500 },
+    { event: { type: "phase", phase: "chatting", round: 1 }, after: 400 },
+    { event: { type: "builder.tool", name: "Read", input: { file_path: "calc.js" } }, after: 350 },
+    ...stream(REPLY_1),
+    { event: { type: "user.message", text: USER_2 }, after: 1100 },
+    { event: { type: "phase", phase: "chatting", round: 1 }, after: 400 },
+    ...stream(REPLY_2),
+
+    // --- the engineer presses "Build this". Only now does anything happen. ------------
+    { event: { type: "snapshot", ref: "5365c7fc9a1b4e2d", label: "build-start" }, after: 900 },
 
     { event: { type: "phase", phase: "planning", round: 1 }, after: 500 },
     { event: { type: "builder.tool", name: "Read", input: { file_path: "README.md" } }, after: 350 },
-    { event: { type: "builder.tool", name: "Read", input: { file_path: "calc.js" } }, after: 400 },
     ...stream(PLAN),
 
     { event: { type: "phase", phase: "plan_review", round: 1 }, after: 600 },
