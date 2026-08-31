@@ -151,11 +151,47 @@ async function main() {
     dim(`\n  Talk it through. ${bold("/build")}${dim(" when you have decided.")} /reset, /exit`),
   );
 
-  const rl = readline.createInterface({ input: stdin, output: stdout });
   let session: string | null = null;
 
+  /**
+   * One line of input. Returns null at end of input.
+   *
+   * Piped stdin and an interactive terminal need different handling. readline closes as soon
+   * as piped input is exhausted -- which happens while the first turn is still running, since
+   * a turn takes minutes -- and any buffered lines after it are lost, silently. So when stdin
+   * is not a TTY, drain it up front and replay it. That also makes the CLI scriptable, which
+   * is how the end-to-end runs are driven.
+   */
+  let nextLine: () => Promise<string | null>;
+  let closeInput = () => {};
+
+  if (stdin.isTTY) {
+    const rl = readline.createInterface({ input: stdin, output: stdout });
+    closeInput = () => rl.close();
+    nextLine = async () => {
+      try {
+        return await rl.question(teal("\n› "));
+      } catch {
+        return null;
+      }
+    };
+  } else {
+    const chunks: Buffer[] = [];
+    for await (const chunk of stdin) chunks.push(chunk as Buffer);
+    const queued = Buffer.concat(chunks).toString().split("\n");
+    let i = 0;
+    nextLine = async () => {
+      if (i >= queued.length) return null;
+      const line = queued[i++]!;
+      process.stdout.write(teal(`\n› `) + line + "\n");
+      return line;
+    };
+  }
+
   for (;;) {
-    const line = (await rl.question(teal("\n› "))).trim();
+    const raw = await nextLine();
+    if (raw === null) break;
+    const line = raw.trim();
     if (!line) continue;
 
     if (line === "/exit" || line === "/quit") break;
@@ -183,7 +219,7 @@ async function main() {
     console.log();
   }
 
-  rl.close();
+  closeInput();
 }
 
 main().catch((e) => {

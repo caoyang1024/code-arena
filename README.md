@@ -210,6 +210,16 @@ throws instead. It is a heuristic; a new phrasing will slip through until it is 
 any kind aborts the turn and says so. Without it, the sandbox hang above burned ten minutes
 of wall-clock looking like normal progress.
 
+## History
+
+This repository previously held a different take on the same instinct: a Python engine that
+had Claude, GPT and Gemini debate a code review between themselves. That work is preserved in
+git history (`git show 23e6ede`) rather than deleted.
+
+The idea here is narrower and, I think, more useful. Adversarial review is not the product —
+*gating the work on it* is. A review you can ignore changes nothing; a review that has to pass
+before the diff is accepted changes what gets written.
+
 ## Next
 
 The CLI is deliberately throwaway. It renders the same `ArenaEvent` stream the Electron app

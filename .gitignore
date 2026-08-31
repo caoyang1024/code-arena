@@ -1,3 +1,9 @@
 node_modules/
+
+# Build artefacts — regenerate with `npm run build`.
 dist/
+dist-electron/
+dist-renderer/
+
+# Per-run state.
 .arena/
