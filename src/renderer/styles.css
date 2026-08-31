@@ -19,10 +19,9 @@
   --minor: #6b7484;
   --ok: #2ec4a6;
 
-  /* Resting height of the writing area: about three lines. This is where the work starts --
-     describing a bug, pasting a trace, thinking out loud -- so it is sized for prose, not for
-     a one-line command. */
-  --composer-h: 82px;
+  /* Resting height of the writing area. Sized for prose -- describing a bug, pasting a
+     trace, thinking out loud -- but not so tall that an empty field is mostly void. */
+  --composer-h: 72px;
 
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
@@ -500,7 +499,7 @@ textarea {
   font-size: 14px;
   line-height: 1.6;
   /* Right padding keeps the last line clear of the button. */
-  padding: 13px 96px 13px 14px;
+  padding: 12px 84px 12px 14px;
   height: var(--composer-h);
   min-height: var(--composer-h);
   /* Long pastes stay readable instead of scrolling inside a letterbox. */
@@ -514,29 +513,36 @@ textarea::placeholder {
 }
 
 /*
- * Send is quiet on purpose.
+ * Send is quiet on purpose, and anchored to the bottom.
  *
- * It was the accent colour -- the same orange that marks the builder's identity and the build
- * decision -- which put the heaviest weight in the window on the most routine, zero-cost act,
- * and left one colour meaning three things. Build is rare and consequential; it keeps the
- * accent. Send is a dozen times an hour and costs nothing; it recedes.
+ * Quiet: it was the accent colour -- the same orange that marks the builder's identity and
+ * the build decision -- which put the heaviest weight in the window on the most routine,
+ * zero-cost act, and left one colour meaning three things. Build is rare and consequential
+ * and keeps the accent; Send happens a dozen times an hour and costs nothing.
+ *
+ * Bottom rather than centred: centring balances the empty field, but the field exists for
+ * long input, and at 300px a centred button floats in the middle of the text with 130px of
+ * nothing beneath it, far from the line being typed. Bottom keeps it beside the cursor.
+ * The sag that made centring tempting came from weight and height, not from position, so
+ * both were reduced instead.
  */
 .composer-row > button {
   position: absolute;
-  right: 9px;
-  bottom: 9px;
-  min-width: 66px;
-  background: var(--surface);
-  border-color: var(--border);
-  color: var(--text-dim);
+  right: 10px;
+  bottom: 10px;
+  min-width: 60px;
+  padding: 7px 12px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-faint);
 }
 .composer-row > button:hover:not(:disabled) {
-  background: #1d222a;
-  border-color: #333c49;
+  background: var(--surface);
+  border-color: var(--border);
   color: var(--text);
 }
 .composer-row > button:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
 button {
