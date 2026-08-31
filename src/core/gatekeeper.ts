@@ -17,6 +17,12 @@ type Emit = (event: ArenaEvent) => void;
 const CHARTER = `You are the gatekeeper on a two-model engineering team. Another model wrote
 the work below. Your job is to decide whether it should be accepted.
 
+Read the conversation first, when one is given. The lines marked ENGINEER are the requirement
+-- they are the only text here the implementer did not write, and they are what the work has
+to satisfy. The lines marked IMPLEMENTER are claims: useful context, not requirements, and
+not evidence. Where the plan or the diff diverges from what the engineer asked for, say so;
+that is the one thing only you can see.
+
 You have read-only access to the repository -- use it. Read the files around a change before
 judging it; a finding you did not verify against the actual code is worse than no finding.
 
@@ -33,6 +39,15 @@ export class Cancelled extends Error {
   constructor() {
     super("Stopped by the user.");
   }
+}
+
+/**
+ * The conversation, when there is one. Placed before everything the implementer wrote, so the
+ * requirement is read before the claims about it.
+ */
+function conversationSection(conversation?: string): string[] {
+  if (!conversation?.trim()) return [];
+  return ["--- CONVERSATION WITH THE ENGINEER ---", conversation.trim(), ""];
 }
 
 export class Gatekeeper {
@@ -103,7 +118,7 @@ export class Gatekeeper {
   }
 
   /** Review the builder's plan before a single file is touched. */
-  async reviewPlan(task: string, plan: string, emit: Emit): Promise<Review> {
+  async reviewPlan(task: string, plan: string, emit: Emit, conversation?: string): Promise<Review> {
     // One thread across all plan rounds, so round 2 knows what it asked for in round 1.
     this.planThread ??= this.newThread();
     const prompt = [
@@ -113,7 +128,8 @@ export class Gatekeeper {
       "task correctly: wrong approach, missed requirement, ignored existing abstraction,",
       "unhandled failure mode, or a plan that contradicts how this repository already works.",
       "",
-      "--- TASK AS GIVEN TO THE IMPLEMENTER ---",
+      ...conversationSection(conversation),
+      "--- WHAT THE ENGINEER ASKED FOR ---",
       task,
       "",
       "--- PROPOSED PLAN ---",
@@ -129,6 +145,7 @@ export class Gatekeeper {
     diff: string,
     changedFiles: string[],
     emit: Emit,
+    conversation?: string,
   ): Promise<Review> {
     this.diffThread ??= this.newThread();
     const prompt = [
@@ -142,7 +159,8 @@ export class Gatekeeper {
       `--- FILES CHANGED (${changedFiles.length}) ---`,
       changedFiles.join("\n") || "(none)",
       "",
-      "--- TASK AS GIVEN TO THE IMPLEMENTER ---",
+      ...conversationSection(conversation),
+      "--- WHAT THE ENGINEER ASKED FOR ---",
       task,
       "",
       "--- APPROVED PLAN ---",

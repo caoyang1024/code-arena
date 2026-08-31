@@ -14,6 +14,7 @@ import { resolveCodex } from "../src/core/codex-path.js";
 import { resolveClaude } from "../src/core/claude-path.js";
 import { startLogin, type LoginHandle } from "../src/core/claude-login.js";
 import { recents, lastProject, remember, forget } from "./store.js";
+import { Transcript } from "../src/core/transcript.js";
 import { Git } from "../src/core/git.js";
 import { replayFixture } from "../src/core/fixture.js";
 import type { ArenaConfig, ArenaEvent } from "../src/core/types.js";
@@ -34,6 +35,13 @@ let running = false;
  */
 let session: string | null = null;
 let projectOfSession = "";
+
+/**
+ * The conversation, so the gatekeeper can see what was actually asked for rather than only
+ * what the builder wrote about it. In memory only; never written to disk. It is sent to the
+ * gatekeeper, which means a conversation reaches both vendors -- see the README.
+ */
+const transcript = new Transcript();
 
 /** An in-flight sign-in, waiting for the code from the browser. */
 let login: LoginHandle | null = null;
@@ -214,6 +222,7 @@ interface TurnOptions {
 function ensureProject(projectDir: string) {
   if (projectOfSession !== projectDir) {
     session = null;
+    transcript.clear();
     projectOfSession = projectDir;
   }
 }
@@ -238,7 +247,15 @@ ipcMain.handle(
     if (running) return { started: false, reason: "Still working on the previous turn." };
     ensureProject(opts.projectDir);
 
-    const send = (e: ArenaEvent) => event.sender.send("arena:event", e);
+    // Capture both halves as they stream: the engineer's line is the requirement, and the
+    // implementer's replies are the context that makes short answers ("throw. use RangeError.")
+    // mean anything.
+    transcript.add("engineer", opts.message);
+    let reply = "";
+    const send = (e: ArenaEvent) => {
+      if (e.type === "builder.text") reply += e.text;
+      event.sender.send("arena:event", e);
+    };
     const codex = await resolveCodex();
 
     running = true;
@@ -252,6 +269,7 @@ ipcMain.handle(
     )
       .then((next) => {
         session = next;
+        transcript.add("implementer", reply);
       })
       .finally(() => {
         running = false;
@@ -305,6 +323,7 @@ ipcMain.handle(
       session,
       opts.instruction,
       { signal: turn.signal },
+      transcript.render(),
     )
       .then((outcome) => {
         session = outcome.sessionId;
@@ -336,6 +355,7 @@ ipcMain.handle("arena:stop", async (): Promise<{ stopped: boolean }> => {
 
 ipcMain.handle("arena:reset", async () => {
   session = null;
+  transcript.clear();
 });
 
 /**

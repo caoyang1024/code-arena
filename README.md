@@ -172,6 +172,27 @@ Layer 2 entirely, git rule included. It is deliberately left off.
 **The gatekeeper is structurally incapable of writing.** `sandboxMode: "read-only"` is set at
 the SDK level in `gatekeeper.ts`. A reviewer that can edit is not a reviewer.
 
+**The gatekeeper sees what you asked for, not only what the builder wrote.** The conversation
+goes to it alongside the plan and the diff, with your lines marked `ENGINEER` and the
+builder's marked `IMPLEMENTER` — yours are the requirement, the builder's are claims.
+
+This is load-bearing. It used to receive the literal string `(see the plan)` as the task,
+because the only thing kept between turns was an opaque session id. Everything it judged was
+authored by the builder, so a review could establish that the builder had not contradicted
+itself and nothing more — "you built the wrong thing" was structurally undiscoverable, which
+is the one class of error the plan-review phase exists to catch. With the conversation in
+hand it rejects a plan that says `TypeError` when you said `RangeError`, or that touches a
+function you asked it to leave alone; both were APPROVE before.
+
+Your words are passed verbatim, never summarised by the builder on the way through: a builder
+that misread the request would carry the misreading into its own summary and the gatekeeper
+would inherit it. When a long conversation has to be trimmed, the builder's turns go first —
+losing one of those costs context, losing one of yours costs a requirement.
+
+**Privacy, stated plainly:** this means your conversation reaches OpenAI as well as Anthropic.
+Before, only the plan and the diff did. It is held in memory in the main process, never
+written to disk, and cleared when you switch projects or start a new conversation.
+
 **The gatekeeper gets the repo, not just the diff.** It reads surrounding files to verify its
 own claims. In the first live test this is what let it catch a missing guard by cross-checking
 the project's stated `TypeError` convention in README.md — invisible from the diff alone.

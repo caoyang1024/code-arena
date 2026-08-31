@@ -23,6 +23,17 @@ import * as builder from "./builder.js";
 import type { BuilderTurn } from "./builder.js";
 import type { ArenaConfig, ArenaEvent, RoundRecord, TaskResult, TurnControl } from "./types.js";
 
+/**
+ * What to put in the task slot when the user pressed Build with an empty composer -- the
+ * main-line path, and the one that used to yield the literal string "(see the plan)".
+ */
+function describeIntent(conversation?: string): string {
+  return conversation?.trim()
+    ? "Not restated separately — see the conversation above. The ENGINEER lines are the requirement."
+    : "No conversation and no instruction were given; the plan is the only statement of intent, " +
+      "so treat an unjustified assumption in it as a finding.";
+}
+
 export interface BuildOutcome extends TaskResult {
   /** Threaded back to the caller so the conversation continues where the build left off. */
   sessionId: string | null;
@@ -68,6 +79,7 @@ export async function runBuild(
   sessionId: string | null,
   instruction?: string,
   control?: TurnControl,
+  conversation?: string,
 ): Promise<BuildOutcome> {
   const git = new Git(config.projectDir);
   const gate = new Gatekeeper(config, control);
@@ -152,7 +164,12 @@ export async function runBuild(
       if (config.skipPlanReview) break;
 
       emit({ type: "phase", phase: "plan_review", round });
-      const review = await gate.reviewPlan(instruction ?? "(see the plan)", currentPlan, emit);
+      const review = await gate.reviewPlan(
+        instruction ?? describeIntent(conversation),
+        currentPlan,
+        emit,
+        conversation,
+      );
       rounds.push({ round, phase: "plan_review", review, snapshot: baseline });
       emit({ type: "review", phase: "plan_review", review });
 
@@ -198,11 +215,12 @@ export async function runBuild(
 
       emit({ type: "phase", phase: "diff_review", round });
       const review = await gate.reviewDiff(
-        instruction ?? "(see the plan)",
+        instruction ?? describeIntent(conversation),
         plan!,
         diff,
         changed,
         emit,
+        conversation,
       );
       rounds.push({ round, phase: "diff_review", review, snapshot });
       emit({ type: "review", phase: "diff_review", review });
