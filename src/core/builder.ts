@@ -13,12 +13,14 @@
  */
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Policy } from "./policy.js";
-import type { ArenaConfig, ArenaEvent, Finding } from "./types.js";
+import type { ArenaConfig, ArenaEvent, Finding, TurnControl } from "./types.js";
 
 export type BuilderMode = "chat" | "plan" | "build";
 
 export interface BuilderTurn {
   text: string;
+  /** True when the user stopped this turn rather than it finishing. */
+  cancelled?: boolean;
   sessionId: string | null;
   costUsd: number;
   denials: number;
@@ -29,8 +31,20 @@ type Emit = (event: ArenaEvent) => void;
 /** Tools that write. Denied outright while chatting or planning. */
 const MUTATING_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
-/** Abort a turn that has gone this long without producing a single message. */
-const SILENCE_TIMEOUT_MS = 150_000;
+/**
+ * Abort a turn that has produced nothing at all for this long.
+ *
+ * Deliberately generous. Messages arrive between tool calls, not during them, so this timer
+ * cannot distinguish "the SDK has hung" from "npm test is still running" -- and running the
+ * tests is exactly what the build phase should be doing. At 150s it killed any turn with a
+ * slow command in it.
+ *
+ * This is a backstop against a wedged subprocess, not a policy on how long work may take.
+ * Deciding that a turn is taking too long is the user's call, and there is a Stop button for
+ * it now; before there was one, this timer was standing in for it, which is why it was set so
+ * aggressively.
+ */
+const SILENCE_TIMEOUT_MS = 15 * 60_000;
 
 /**
  * Account-level failures (quota, billing, auth) arrive as an ordinary successful result whose
@@ -106,7 +120,7 @@ async function drive(
   prompt: string,
   config: ArenaConfig,
   emit: Emit,
-  opts: { mode: BuilderMode; resume: string | null },
+  opts: { mode: BuilderMode; resume: string | null; control?: TurnControl },
 ): Promise<BuilderTurn> {
   const readOnly = opts.mode !== "build";
   const policy = new Policy({
@@ -122,6 +136,13 @@ async function drive(
   let denials = 0;
 
   const abort = new AbortController();
+  // Fold the caller's cancellation into this turn's controller.
+  const external = opts.control?.signal;
+  if (external) {
+    if (external.aborted) abort.abort();
+    else external.addEventListener("abort", () => abort.abort(), { once: true });
+  }
+
   const response = query({
     prompt,
     options: {
@@ -230,11 +251,15 @@ async function drive(
         }
       }
     }
+  } catch (error) {
+    // An abort is a user decision, not a failure. Surface it as one.
+    if (external?.aborted) return { text, sessionId, costUsd, denials, cancelled: true };
+    throw error;
   } finally {
     clearInterval(watchdog);
   }
 
-  return { text, sessionId, costUsd, denials };
+  return { text, sessionId, costUsd, denials, cancelled: external?.aborted ?? false };
 }
 
 // -----------------------------------------------------------------------------------------
@@ -246,8 +271,9 @@ export function chat(
   config: ArenaConfig,
   emit: Emit,
   sessionId: string | null,
+  control?: TurnControl,
 ): Promise<BuilderTurn> {
-  return drive(message, config, emit, { mode: "chat", resume: sessionId });
+  return drive(message, config, emit, { mode: "chat", resume: sessionId, ...(control ? { control } : {}) });
 }
 
 /** Entered when the user decides to build. Resumes the conversation that led here. */
@@ -256,11 +282,12 @@ export function plan(
   emit: Emit,
   sessionId: string | null,
   instruction?: string,
+  control?: TurnControl,
 ): Promise<BuilderTurn> {
   const prompt = instruction
     ? `${PLAN_PREAMBLE}\n\n--- WHAT TO BUILD ---\n${instruction}`
     : PLAN_PREAMBLE;
-  return drive(prompt, config, emit, { mode: "plan", resume: sessionId });
+  return drive(prompt, config, emit, { mode: "plan", resume: sessionId, ...(control ? { control } : {}) });
 }
 
 export function replan(
@@ -269,6 +296,7 @@ export function replan(
   config: ArenaConfig,
   emit: Emit,
   sessionId: string | null,
+  control?: TurnControl,
 ): Promise<BuilderTurn> {
   const prompt = [
     REVISE_PREAMBLE,
@@ -281,15 +309,16 @@ export function replan(
     "",
     "Produce the corrected plan. Still do not write code.",
   ].join("\n");
-  return drive(prompt, config, emit, { mode: "plan", resume: sessionId });
+  return drive(prompt, config, emit, { mode: "plan", resume: sessionId, ...(control ? { control } : {}) });
 }
 
 export function implement(
   config: ArenaConfig,
   emit: Emit,
   sessionId: string | null,
+  control?: TurnControl,
 ): Promise<BuilderTurn> {
-  return drive(BUILD_PREAMBLE, config, emit, { mode: "build", resume: sessionId });
+  return drive(BUILD_PREAMBLE, config, emit, { mode: "build", resume: sessionId, ...(control ? { control } : {}) });
 }
 
 export function revise(
@@ -298,6 +327,7 @@ export function revise(
   config: ArenaConfig,
   emit: Emit,
   sessionId: string | null,
+  control?: TurnControl,
 ): Promise<BuilderTurn> {
   const prompt = [
     REVISE_PREAMBLE,
@@ -308,5 +338,5 @@ export function revise(
     "--- FINDINGS ---",
     renderFindings(findings),
   ].join("\n");
-  return drive(prompt, config, emit, { mode: "build", resume: sessionId });
+  return drive(prompt, config, emit, { mode: "build", resume: sessionId, ...(control ? { control } : {}) });
 }

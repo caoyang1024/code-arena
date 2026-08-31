@@ -224,9 +224,19 @@ orchestrator hands that string to the gatekeeper as if it were a plan. `builder.
 matches a short, single-turn, tool-free result against known account-failure phrasings and
 throws instead. It is a heuristic; a new phrasing will slip through until it is added.
 
-**A hung SDK looks exactly like a slow model.** There is a watchdog: 150s with no message of
-any kind aborts the turn and says so. Without it, the sandbox hang above burned ten minutes
-of wall-clock looking like normal progress.
+**You can stop a turn.** `Stop`, or `Esc` in the composer. The message you sent goes back into
+the box so a typo can be fixed and resent rather than retyped — reaching for Stop almost always
+means the input was wrong, not that the work was.
+
+Stopping mid-build keeps whatever the builder already wrote and snapshots it, so you can see
+what landed. It is an abandon, not a pause: there is no resume point inside a model turn.
+
+**A hung SDK looks exactly like a slow model.** There is a watchdog, but it is deliberately
+generous (15 minutes). Messages arrive between tool calls, not during them, so the timer
+cannot tell "the SDK has wedged" from "`npm test` is still running" — and running the tests is
+exactly what the build phase should be doing. At its original 150s it would have killed any
+turn containing a slow command. It is a backstop against a wedged subprocess; deciding that
+work is taking too long is the user's call, which is what Stop is for.
 
 ## History
 

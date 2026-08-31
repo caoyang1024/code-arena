@@ -36,6 +36,9 @@ let projectOfSession = "";
 /** An in-flight sign-in, waiting for the code from the browser. */
 let login: LoginHandle | null = null;
 
+/** Cancels the turn currently in flight. Null when nothing is running. */
+let turn: AbortController | null = null;
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1180,
@@ -184,12 +187,20 @@ ipcMain.handle(
     const codex = await resolveCodex();
 
     running = true;
-    void runChat(opts.message, await configFor(opts, codex?.path ?? ""), send, session)
+    turn = new AbortController();
+    void runChat(
+      opts.message,
+      await configFor(opts, codex?.path ?? ""),
+      send,
+      session,
+      { signal: turn.signal },
+    )
       .then((next) => {
         session = next;
       })
       .finally(() => {
         running = false;
+        turn = null;
         event.sender.send("arena:idle", true);
       });
 
@@ -212,10 +223,13 @@ ipcMain.handle(
     // account.
     if (opts.demo) {
       running = true;
-      void replayFixture(send)
+      turn = new AbortController();
+      const signal = turn.signal;
+      void replayFixture(send, signal)
         .catch((e: unknown) => send({ type: "log", level: "error", message: String(e) }))
         .finally(() => {
           running = false;
+          turn = null;
           event.sender.send("arena:idle", true);
         });
       return { started: true };
@@ -229,7 +243,14 @@ ipcMain.handle(
     }
 
     running = true;
-    void runBuild(await configFor(opts, codex.path), send, session, opts.instruction)
+    turn = new AbortController();
+    void runBuild(
+      await configFor(opts, codex.path),
+      send,
+      session,
+      opts.instruction,
+      { signal: turn.signal },
+    )
       .then((outcome) => {
         session = outcome.sessionId;
       })
@@ -238,12 +259,25 @@ ipcMain.handle(
       )
       .finally(() => {
         running = false;
+        turn = null;
         event.sender.send("arena:idle", true);
       });
 
     return { started: true };
   },
 );
+
+/**
+ * Stop whatever is running.
+ *
+ * There was no way to do this at all: once a turn started, the only exits were waiting it out
+ * or killing the process. Mistyping a message and watching it run was the common case.
+ */
+ipcMain.handle("arena:stop", async (): Promise<{ stopped: boolean }> => {
+  if (!turn) return { stopped: false };
+  turn.abort();
+  return { stopped: true };
+});
 
 ipcMain.handle("arena:reset", async () => {
   session = null;

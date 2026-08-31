@@ -16,6 +16,7 @@ export type Phase =
   | "implementing"
   | "diff_review"
   | "approved"
+  | "cancelled"
   | "escalated"
   | "failed";
 
@@ -72,6 +73,11 @@ export interface TaskResult {
 }
 
 /** Everything the orchestrator emits, for the CLI and later the Electron UI to render. */
+/** Threaded through a turn so the user can stop it. */
+export interface TurnControl {
+  signal: AbortSignal;
+}
+
 export type ArenaEvent =
   | { type: "phase"; phase: Phase; round: number }
   | { type: "user.message"; text: string }
@@ -84,6 +90,7 @@ export type ArenaEvent =
   | { type: "snapshot"; ref: string; label: string }
   | { type: "cost"; cost: Cost }
   | { type: "done"; result: TaskResult }
+  | { type: "cancelled"; phase: Phase }
   | { type: "log"; level: "info" | "warn" | "error"; message: string };
 
 export interface ArenaConfig {

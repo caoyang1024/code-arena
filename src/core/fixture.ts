@@ -108,7 +108,10 @@ function stream(text: string): Step[] {
   return steps;
 }
 
-export async function replayFixture(emit: (event: ArenaEvent) => void): Promise<void> {
+export async function replayFixture(
+  emit: (event: ArenaEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
   const steps: Step[] = [
     // --- conversation: read-only, no gatekeeper, no decision made yet ------------------
     { event: { type: "user.message", text: USER_1 }, after: 500 },
@@ -198,6 +201,10 @@ export async function replayFixture(emit: (event: ArenaEvent) => void): Promise<
   ];
 
   for (const step of steps) {
+    if (signal?.aborted) {
+      emit({ type: "cancelled", phase: "cancelled" });
+      return;
+    }
     emit(step.event);
     if (step.after) await sleep(step.after);
   }

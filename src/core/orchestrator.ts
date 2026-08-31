@@ -18,10 +18,10 @@
  * "build what we just discussed" mean anything.
  */
 import { Git } from "./git.js";
-import { Gatekeeper } from "./gatekeeper.js";
+import { Gatekeeper, Cancelled } from "./gatekeeper.js";
 import * as builder from "./builder.js";
 import type { BuilderTurn } from "./builder.js";
-import type { ArenaConfig, ArenaEvent, RoundRecord, TaskResult } from "./types.js";
+import type { ArenaConfig, ArenaEvent, RoundRecord, TaskResult, TurnControl } from "./types.js";
 
 export interface BuildOutcome extends TaskResult {
   /** Threaded back to the caller so the conversation continues where the build left off. */
@@ -37,11 +37,13 @@ export async function runChat(
   config: ArenaConfig,
   emit: (event: ArenaEvent) => void,
   sessionId: string | null,
+  control?: TurnControl,
 ): Promise<string | null> {
   emit({ type: "user.message", text: message });
   emit({ type: "phase", phase: "chatting", round: 1 });
   try {
-    const turn = await builder.chat(message, config, emit, sessionId);
+    const turn = await builder.chat(message, config, emit, sessionId, control);
+    if (turn.cancelled) emit({ type: "cancelled", phase: "chatting" });
     emit({ type: "session", sessionId: turn.sessionId });
     return turn.sessionId;
   } catch (error) {
@@ -65,9 +67,11 @@ export async function runBuild(
   emit: (event: ArenaEvent) => void,
   sessionId: string | null,
   instruction?: string,
+  control?: TurnControl,
 ): Promise<BuildOutcome> {
   const git = new Git(config.projectDir);
-  const gate = new Gatekeeper(config);
+  const gate = new Gatekeeper(config, control);
+  const stopped = () => control?.signal.aborted ?? false;
   const rounds: RoundRecord[] = [];
 
   let plan: string | null = null;
@@ -80,6 +84,15 @@ export async function runBuild(
     gatekeeperCachedInputTokens: gate.cachedInputTokens,
     gatekeeperOutputTokens: gate.outputTokens,
   });
+
+  let baselineRef: string | null = null;
+  const safeDiff = async (g: Git) => {
+    try {
+      return baselineRef ? await g.diff(baselineRef, await g.snapshot("stopped")) : "";
+    } catch {
+      return "";
+    }
+  };
 
   const finish = (
     phase: TaskResult["phase"],
@@ -95,6 +108,7 @@ export async function runBuild(
       sessionId: session,
       ...(error ? { error } : {}),
     };
+    if (phase === "cancelled") emit({ type: "cancelled", phase: "cancelled" });
     emit({ type: "cost", cost: result.cost });
     emit({ type: "session", sessionId: session });
     emit({ type: "done", result });
@@ -107,6 +121,7 @@ export async function runBuild(
     }
 
     const baseline = await git.snapshot("build-start");
+    baselineRef = baseline;
     emit({ type: "snapshot", ref: baseline, label: "build-start" });
 
     // ---- Phase 1: plan, reviewed before anything is written -------------------------
@@ -115,16 +130,18 @@ export async function runBuild(
       emit({ type: "phase", phase: "planning", round });
       const turn: BuilderTurn =
         round === 1
-          ? await builder.plan(config, emit, session, instruction)
+          ? await builder.plan(config, emit, session, instruction, control)
           : await builder.replan(
               rounds.at(-1)!.review.findings,
               rounds.at(-1)!.review.summary,
               config,
               emit,
               session,
+              control,
             );
       builderUsd += turn.costUsd;
       session = turn.sessionId;
+      if (turn.cancelled || stopped()) return finish("cancelled", "");
       const currentPlan = turn.text;
       plan = currentPlan;
 
@@ -153,22 +170,27 @@ export async function runBuild(
       emit({ type: "phase", phase: "implementing", round });
       const turn: BuilderTurn =
         round === 1
-          ? await builder.implement(config, emit, session)
+          ? await builder.implement(config, emit, session, control)
           : await builder.revise(
               rounds.at(-1)!.review.findings,
               rounds.at(-1)!.review.summary,
               config,
               emit,
               session,
+              control,
             );
       builderUsd += turn.costUsd;
       session = turn.sessionId;
 
+      // Snapshot before bailing out: the builder may have written files before it was
+      // stopped, and the user needs to see what landed.
       const snapshot = await git.snapshot(`round-${round}`);
       emit({ type: "snapshot", ref: snapshot, label: `round-${round}` });
 
       const diff = await git.diff(baseline, snapshot);
       const changed = await git.changedFiles(baseline, snapshot);
+
+      if (turn.cancelled || stopped()) return finish("cancelled", diff);
 
       emit({ type: "phase", phase: "diff_review", round });
       const review = await gate.reviewDiff(
@@ -198,6 +220,10 @@ export async function runBuild(
       round += 1;
     }
   } catch (error) {
+    if (error instanceof Cancelled || stopped()) {
+      const diff = plan ? await safeDiff(git) : "";
+      return finish("cancelled", diff);
+    }
     const message = error instanceof Error ? error.message : String(error);
     emit({ type: "log", level: "error", message });
     return finish("failed", "", message);

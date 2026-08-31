@@ -35,6 +35,7 @@ window.arena = {
     void replayFixture(emit).finally(() => idle.forEach((l) => l()));
     return { started: true };
   },
+  stop: async () => ({ stopped: true }),
   reset: async () => {},
   loginStart: async () => ({ ok: true, url: "https://claude.com/cai/oauth/authorize?preview=1" }),
   loginCode: async () => ({ ok: false, detail: "Preview stub — no real sign-in here." }),

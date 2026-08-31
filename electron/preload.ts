@@ -26,6 +26,9 @@ const api = {
   build: (opts: TurnOptions & { instruction?: string; demo?: boolean }): Promise<Started> =>
     ipcRenderer.invoke("arena:build", opts),
 
+  /** Stop the turn in flight. Safe to call when nothing is running. */
+  stop: (): Promise<{ stopped: boolean }> => ipcRenderer.invoke("arena:stop"),
+
   /** Forget the conversation and start fresh. */
   reset: (): Promise<void> => ipcRenderer.invoke("arena:reset"),
 

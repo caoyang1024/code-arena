@@ -704,3 +704,16 @@ button.primary:hover:not(:disabled) {
 .code-input::placeholder {
   color: var(--text-faint);
 }
+
+.mark.stopped {
+  color: var(--major);
+}
+
+button.stop {
+  border-color: rgba(224, 160, 60, 0.45);
+  color: var(--major);
+}
+button.stop:hover {
+  border-color: var(--major);
+  color: var(--major);
+}

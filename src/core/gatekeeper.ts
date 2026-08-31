@@ -10,7 +10,7 @@
  */
 import { Codex, type Thread } from "@openai/codex-sdk";
 import { REVIEW_SCHEMA, parseReview } from "./schema.js";
-import type { ArenaConfig, ArenaEvent, Review } from "./types.js";
+import type { ArenaConfig, ArenaEvent, Review, TurnControl } from "./types.js";
 
 type Emit = (event: ArenaEvent) => void;
 
@@ -28,6 +28,13 @@ Rules:
   request_changes.
 - Do not restate the diff back at me.`;
 
+/** Thrown when the user stops a turn. Distinguished from a failure everywhere it is caught. */
+export class Cancelled extends Error {
+  constructor() {
+    super("Stopped by the user.");
+  }
+}
+
 export class Gatekeeper {
   private readonly codex: Codex;
   private planThread: Thread | null = null;
@@ -36,7 +43,10 @@ export class Gatekeeper {
   public cachedInputTokens = 0;
   public outputTokens = 0;
 
-  constructor(private readonly config: ArenaConfig) {
+  constructor(
+    private readonly config: ArenaConfig,
+    private readonly control?: TurnControl,
+  ) {
     // Never the npm-vendored binary -- see doctor.ts for why.
     this.codex = new Codex({ codexPathOverride: config.codexPath });
   }
@@ -55,6 +65,10 @@ export class Gatekeeper {
 
     let final = "";
     for await (const event of events) {
+      // Breaking the loop returns the generator, which tears down the codex subprocess. The
+      // review is abandoned rather than paused; there is no resume point in a codex turn.
+      if (this.control?.signal.aborted) throw new Cancelled();
+
       if (event.type === "item.completed") {
         const item = event.item;
         switch (item.type) {

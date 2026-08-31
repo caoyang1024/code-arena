@@ -28,6 +28,7 @@ interface ArenaApi {
   build(
     opts: TurnOptions & { instruction?: string; demo?: boolean },
   ): Promise<{ started: boolean; reason?: string }>;
+  stop(): Promise<{ stopped: boolean }>;
   reset(): Promise<void>;
   loginStart(email?: string): Promise<{ ok: boolean; url?: string; reason?: string }>;
   loginCode(code: string): Promise<{ ok: boolean; detail: string }>;
@@ -55,7 +56,8 @@ type Block =
   | { kind: "denial"; id: number; name: string; reason: string }
   | { kind: "snapshot"; id: number; ref: string; label: string }
   | { kind: "outcome"; id: number; result: TaskResult }
-  | { kind: "note"; id: number; level: "info" | "warn" | "error"; message: string };
+  | { kind: "note"; id: number; level: "info" | "warn" | "error"; message: string }
+  | { kind: "stopped"; id: number };
 
 let nextId = 0;
 
@@ -140,6 +142,9 @@ function reduce(blocks: Block[], event: ArenaEvent): Block[] {
       if (block?.kind !== "gatekeeper") return blocks;
       return replaceAt(blocks, i, { ...block, review: event.review });
     }
+
+    case "cancelled":
+      return [...blocks, { kind: "stopped", id: nextId++ }];
 
     case "snapshot":
       return [...blocks, { kind: "snapshot", id: nextId++, ref: event.ref, label: event.label }];
@@ -343,6 +348,9 @@ function BlockView({ block, projectDir }: { block: Block; projectDir: string }) 
         </div>
       );
 
+    case "stopped":
+      return <div className="mark stopped">stopped by you</div>;
+
     case "snapshot":
       return (
         <div className="mark">
@@ -424,6 +432,13 @@ function Arena() {
   const [code, setCode] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginNote, setLoginNote] = useState<string | null>(null);
+
+  /**
+   * What was sent on the turn in flight. If the user stops it, this goes back into the
+   * composer -- the reason people reach for Stop is usually a typo, and retyping the whole
+   * message to fix one word is its own small insult.
+   */
+  const inFlight = useRef("");
 
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [phase, setPhase] = useState<Phase | null>(null);
@@ -518,6 +533,7 @@ function Arena() {
   const send = useCallback(async () => {
     const message = draft.trim();
     if (running || !message || !projectDir) return;
+    inFlight.current = message;
     setDraft("");
     pinned.current = true;
     setRunning(true);
@@ -539,7 +555,10 @@ function Arena() {
         setPhase(null);
       }
       const instruction = draft.trim();
-      if (instruction) setDraft("");
+      if (instruction) {
+        inFlight.current = instruction;
+        setDraft("");
+      }
       pinned.current = true;
       setRunning(true);
       const res = await window.arena.build({
@@ -582,6 +601,16 @@ function Arena() {
     setCode("");
     setLoginNote(null);
   }, []);
+
+  /** Stop the turn in flight and give the user their words back. */
+  const stop = useCallback(async () => {
+    if (!running) return;
+    await window.arena.stop();
+    if (inFlight.current) {
+      setDraft((d) => (d.trim() ? d : inFlight.current));
+      inFlight.current = "";
+    }
+  }, [running]);
 
   const restart = useCallback(async () => {
     if (running) return;
@@ -720,11 +749,13 @@ function Arena() {
           <textarea
             value={draft}
             placeholder={
-              projectDir
-                ? hasContext
-                  ? "Reply, or press Build this when you have decided…"
-                  : "What are you thinking about? Nothing gets written yet."
-                : "Choose a project to begin…"
+              running
+                ? "Stop (Esc) to take it back and edit…"
+                : projectDir
+                  ? hasContext
+                    ? "Reply, or press Build this when you have decided…"
+                    : "What are you thinking about? Nothing gets written yet."
+                  : "Choose a project to begin…"
             }
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -732,13 +763,22 @@ function Arena() {
                 e.preventDefault();
                 void send();
               }
+              if (e.key === "Escape" && running) {
+                e.preventDefault();
+                void stop();
+              }
             }}
-            disabled={running}
           />
           <div className="composer-actions">
-            <button onClick={() => void send()} disabled={running || !draft.trim() || !projectDir}>
-              Send
-            </button>
+            {running ? (
+              <button className="stop" onClick={() => void stop()}>
+                Stop
+              </button>
+            ) : (
+              <button onClick={() => void send()} disabled={!draft.trim() || !projectDir}>
+                Send
+              </button>
+            )}
             <button
               className="primary build"
               onClick={() => void build()}
