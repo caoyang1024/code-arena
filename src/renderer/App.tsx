@@ -29,6 +29,10 @@ interface ArenaApi {
     opts: TurnOptions & { instruction?: string; demo?: boolean },
   ): Promise<{ started: boolean; reason?: string }>;
   reset(): Promise<void>;
+  loginStart(email?: string): Promise<{ ok: boolean; url?: string; reason?: string }>;
+  loginCode(code: string): Promise<{ ok: boolean; detail: string }>;
+  loginCancel(): Promise<void>;
+  openExternal(url: string): Promise<void>;
   revealDiff(projectDir: string): Promise<void>;
   onEvent(cb: (event: ArenaEvent) => void): () => void;
   onIdle(cb: () => void): () => void;
@@ -413,6 +417,13 @@ function Arena() {
   const [doctor, setDoctor] = useState<DoctorReport | null>(null);
   const [showSetup, setShowSetup] = useState(false);
 
+  // Sign-in. `code` lives here only long enough to be handed to the main process, which
+  // forwards it to the official binary; nothing is persisted on either side.
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginNote, setLoginNote] = useState<string | null>(null);
+
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [phase, setPhase] = useState<Phase | null>(null);
   const [round, setRound] = useState(1);
@@ -523,6 +534,37 @@ function Arena() {
     [running, projectDir, draft, turnOptions, fail],
   );
 
+  const signIn = useCallback(async () => {
+    setLoginBusy(true);
+    setLoginNote(null);
+    const res = await window.arena.loginStart();
+    setLoginBusy(false);
+    if (res.ok && res.url) {
+      setLoginUrl(res.url);
+      void window.arena.openExternal(res.url);
+    } else {
+      setLoginNote(res.reason ?? "Could not start sign-in.");
+    }
+  }, []);
+
+  const submitCode = useCallback(async () => {
+    if (!code.trim()) return;
+    setLoginBusy(true);
+    const res = await window.arena.loginCode(code);
+    setCode("");
+    setLoginBusy(false);
+    setLoginNote(res.detail);
+    if (res.ok) setLoginUrl(null);
+    void refreshDoctor(projectDir);
+  }, [code, projectDir, refreshDoctor]);
+
+  const cancelSignIn = useCallback(async () => {
+    await window.arena.loginCancel();
+    setLoginUrl(null);
+    setCode("");
+    setLoginNote(null);
+  }, []);
+
   const restart = useCallback(async () => {
     if (running) return;
     await window.arena.reset();
@@ -597,6 +639,61 @@ function Arena() {
               <span className="detail">{check.detail}</span>
             </div>
           ))}
+
+          {!doctor.builder.ok && !loginUrl && (
+            <div className="signin">
+              <button onClick={() => void signIn()} disabled={loginBusy}>
+                {loginBusy ? "Starting…" : "Connect Claude account"}
+              </button>
+              <span className="signin-note">
+                Opens Anthropic's own sign-in in your browser. CodeArena never sees your
+                password and stores no token.
+              </span>
+            </div>
+          )}
+
+          {loginUrl && (
+            <div className="signin-flow">
+              <div className="signin-step">
+                <b>1.</b> Approve in the browser tab that just opened.{" "}
+                <button className="link" onClick={() => void window.arena.openExternal(loginUrl)}>
+                  reopen it
+                </button>
+              </div>
+              <div className="signin-step">
+                <b>2.</b> Paste the code it gives you:
+              </div>
+              <div className="signin-row">
+                <input
+                  className="code-input"
+                  value={code}
+                  placeholder="authorization code"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) => setCode(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void submitCode();
+                    }
+                  }}
+                  disabled={loginBusy}
+                />
+                <button
+                  className="primary"
+                  onClick={() => void submitCode()}
+                  disabled={loginBusy || !code.trim()}
+                >
+                  {loginBusy ? "Signing in…" : "Sign in"}
+                </button>
+                <button onClick={() => void cancelSignIn()} disabled={loginBusy}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {loginNote && <div className="signin-note result">{loginNote}</div>}
         </div>
       )}
 

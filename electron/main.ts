@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { runChat, runBuild } from "../src/core/orchestrator.js";
 import { resolveCodex } from "../src/core/codex-path.js";
 import { resolveClaude } from "../src/core/claude-path.js";
+import { startLogin, type LoginHandle } from "../src/core/claude-login.js";
 import { Git } from "../src/core/git.js";
 import { replayFixture } from "../src/core/fixture.js";
 import type { ArenaConfig, ArenaEvent } from "../src/core/types.js";
@@ -31,6 +32,9 @@ let running = false;
  */
 let session: string | null = null;
 let projectOfSession = "";
+
+/** An in-flight sign-in, waiting for the code from the browser. */
+let login: LoginHandle | null = null;
 
 function createWindow() {
   win = new BrowserWindow({
@@ -243,6 +247,51 @@ ipcMain.handle(
 
 ipcMain.handle("arena:reset", async () => {
   session = null;
+});
+
+/**
+ * Sign-in is a three-step handshake and it deliberately keeps the credential out of
+ * CodeArena: start returns only the authorize URL, the user completes it in their own
+ * browser, and the code they get back is written straight to the official binary's stdin.
+ * Nothing is stored here -- the binary owns the credential store, as it does in a terminal.
+ */
+ipcMain.handle(
+  "arena:login:start",
+  async (_e, email?: string): Promise<{ ok: boolean; url?: string; reason?: string }> => {
+    login?.cancel();
+    login = null;
+    try {
+      login = await startLogin(email);
+      return { ok: true, url: login.url };
+    } catch (error) {
+      return { ok: false, reason: (error as Error).message };
+    }
+  },
+);
+
+ipcMain.handle(
+  "arena:login:code",
+  async (_e, code: string): Promise<{ ok: boolean; detail: string }> => {
+    if (!login) return { ok: false, detail: "No sign-in in progress." };
+    try {
+      const result = await login.submitCode(code);
+      return { ok: result.ok, detail: result.detail };
+    } finally {
+      login = null;
+    }
+  },
+);
+
+ipcMain.handle("arena:login:cancel", async () => {
+  login?.cancel();
+  login = null;
+});
+
+ipcMain.handle("arena:openExternal", async (_e, url: string) => {
+  // Only ever the authorize URL we produced ourselves.
+  if (/^https:\/\/(claude\.com|claude\.ai|platform\.claude\.com|console\.anthropic\.com)\//.test(url)) {
+    await shell.openExternal(url);
+  }
 });
 
 ipcMain.handle("arena:revealDiff", async (_e, projectDir: string) => {

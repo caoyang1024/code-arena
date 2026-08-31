@@ -36,6 +36,10 @@ window.arena = {
     return { started: true };
   },
   reset: async () => {},
+  loginStart: async () => ({ ok: true, url: "https://claude.com/cai/oauth/authorize?preview=1" }),
+  loginCode: async () => ({ ok: false, detail: "Preview stub — no real sign-in here." }),
+  loginCancel: async () => {},
+  openExternal: async () => {},
   revealDiff: async () => {},
   onIdle: (cb) => {
     idle.add(cb);

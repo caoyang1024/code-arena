@@ -26,6 +26,14 @@ var api = {
   build: (opts) => import_electron.ipcRenderer.invoke("arena:build", opts),
   /** Forget the conversation and start fresh. */
   reset: () => import_electron.ipcRenderer.invoke("arena:reset"),
+  /**
+   * Sign-in. `start` returns only the authorize URL; the code the browser gives you is
+   * forwarded straight to the official binary and is never stored on this side.
+   */
+  loginStart: (email) => import_electron.ipcRenderer.invoke("arena:login:start", email),
+  loginCode: (code) => import_electron.ipcRenderer.invoke("arena:login:code", code),
+  loginCancel: () => import_electron.ipcRenderer.invoke("arena:login:cancel"),
+  openExternal: (url) => import_electron.ipcRenderer.invoke("arena:openExternal", url),
   revealDiff: (projectDir) => import_electron.ipcRenderer.invoke("arena:revealDiff", projectDir),
   /** Fires when a turn finishes, whatever its outcome. */
   onIdle: (callback) => {

@@ -29,6 +29,17 @@ const api = {
   /** Forget the conversation and start fresh. */
   reset: (): Promise<void> => ipcRenderer.invoke("arena:reset"),
 
+  /**
+   * Sign-in. `start` returns only the authorize URL; the code the browser gives you is
+   * forwarded straight to the official binary and is never stored on this side.
+   */
+  loginStart: (email?: string): Promise<{ ok: boolean; url?: string; reason?: string }> =>
+    ipcRenderer.invoke("arena:login:start", email),
+  loginCode: (code: string): Promise<{ ok: boolean; detail: string }> =>
+    ipcRenderer.invoke("arena:login:code", code),
+  loginCancel: (): Promise<void> => ipcRenderer.invoke("arena:login:cancel"),
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke("arena:openExternal", url),
+
   revealDiff: (projectDir: string) => ipcRenderer.invoke("arena:revealDiff", projectDir),
 
   /** Fires when a turn finishes, whatever its outcome. */

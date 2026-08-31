@@ -1267,6 +1267,91 @@ async function resolveClaude() {
   );
 }
 
+// src/core/claude-login.ts
+import { spawn } from "node:child_process";
+var URL_TIMEOUT_MS = 2e4;
+var EXIT_TIMEOUT_MS = 6e4;
+var URL_PATTERN = /https:\/\/\S*oauth\/authorize\S*/;
+var LoginError = class extends Error {
+};
+async function startLogin(email) {
+  const claude = await resolveClaude();
+  if (!claude.path) {
+    throw new LoginError(
+      "No Claude Code install found to sign in with. Install the Claude desktop app or the claude CLI first."
+    );
+  }
+  const args = ["auth", "login", "--claudeai"];
+  if (email) args.push("--email", email);
+  const child = spawn(claude.path, args, {
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  let transcript = "";
+  let settled = false;
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(new LoginError("Timed out waiting for the sign-in URL."));
+    }, URL_TIMEOUT_MS);
+    const scan = (chunk) => {
+      transcript += chunk.toString();
+      const match = transcript.match(URL_PATTERN);
+      if (match && !settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(match[0]);
+      }
+    };
+    child.stdout.on("data", scan);
+    child.stderr.on("data", scan);
+    child.once("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new LoginError(`Could not start sign-in: ${err.message}`));
+    });
+    child.once("exit", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new LoginError(`Sign-in exited early (code ${code}) before printing a URL.`));
+    });
+  });
+  return {
+    url,
+    async submitCode(code) {
+      const trimmed = code.trim();
+      if (!trimmed) return { ok: false, detail: "No code entered." };
+      child.stdin.write(`${trimmed}
+`);
+      child.stdin.end();
+      const exited = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(false), EXIT_TIMEOUT_MS);
+        child.once("exit", () => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+      if (!exited) {
+        child.kill();
+        return { ok: false, detail: "Sign-in did not complete in time." };
+      }
+      const auth = await resolveClaude();
+      if (auth.usable) return { ok: true, detail: auth.detail, auth };
+      return {
+        ok: false,
+        detail: auth.loggedIn ? auth.detail : "Sign-in did not take. Check the code and try again.",
+        auth
+      };
+    },
+    cancel() {
+      child.kill();
+    }
+  };
+}
+
 // src/core/fixture.ts
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 var USER_1 = `average() is returning NaN somewhere in the report pipeline. is that our bug or the caller's?`;
@@ -1450,6 +1535,7 @@ var win = null;
 var running = false;
 var session = null;
 var projectOfSession = "";
+var login = null;
 function createWindow() {
   win = new BrowserWindow({
     width: 1180,
@@ -1598,6 +1684,40 @@ ipcMain.handle(
 );
 ipcMain.handle("arena:reset", async () => {
   session = null;
+});
+ipcMain.handle(
+  "arena:login:start",
+  async (_e, email) => {
+    login?.cancel();
+    login = null;
+    try {
+      login = await startLogin(email);
+      return { ok: true, url: login.url };
+    } catch (error) {
+      return { ok: false, reason: error.message };
+    }
+  }
+);
+ipcMain.handle(
+  "arena:login:code",
+  async (_e, code) => {
+    if (!login) return { ok: false, detail: "No sign-in in progress." };
+    try {
+      const result = await login.submitCode(code);
+      return { ok: result.ok, detail: result.detail };
+    } finally {
+      login = null;
+    }
+  }
+);
+ipcMain.handle("arena:login:cancel", async () => {
+  login?.cancel();
+  login = null;
+});
+ipcMain.handle("arena:openExternal", async (_e, url) => {
+  if (/^https:\/\/(claude\.com|claude\.ai|platform\.claude\.com|console\.anthropic\.com)\//.test(url)) {
+    await shell.openExternal(url);
+  }
 });
 ipcMain.handle("arena:revealDiff", async (_e, projectDir) => {
   shell.openPath(projectDir);
