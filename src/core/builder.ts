@@ -161,13 +161,22 @@ async function drive(
           ? { type: "preset", preset: "claude_code", append: CHAT_SYSTEM }
           : { type: "preset", preset: "claude_code" },
 
-      // Layer 1: kernel-enforced isolation. OFF BY DEFAULT -- it hangs.
+      // Layer 1: kernel-enforced isolation. ON by default.
       //
-      // Measured on claude-agent-sdk 0.1.77 / macOS 25.6: with `sandbox: { enabled: true }`,
-      // query() emits system:init at ~0.6s and then never yields another message. The same
-      // call without it returns in 3.7s. Worse, the hang swallows account-level errors, so a
-      // failed run is indistinguishable from a slow one.
-      ...(config.sandbox === true ? { sandbox: { enabled: true } } : {}),
+      // It was off for a while on the strength of a bad measurement: with the SDK's own
+      // bundled cli.js (0.1.77) a sandboxed query emits system:init and then never yields
+      // again -- not even an AbortController ends it. That was recorded as "the sandbox
+      // hangs". It is the bundled binary that hangs. Against the Claude Code the user is
+      // actually signed in to (2.1.247, which is what claudePath resolves to) the same call
+      // returns in 4.9s.
+      //
+      // And it enforces: `node -e "fs.writeFileSync('/tmp/x')"` writes the file with the
+      // sandbox off and fails with EPERM from the kernel with it on. That is exactly the
+      // escape policy.ts cannot close, because build mode legitimately needs interpreters
+      // and no amount of string analysis reaches inside one.
+      //
+      // Pass `sandbox: false` if a toolchain needs something it denies.
+      ...(config.sandbox === false ? {} : { sandbox: { enabled: true } }),
 
       // Layer 2: CodeArena adjudicates every call the permission flow would have prompted a
       // human for. Denials carry a reason so the model adapts instead of retrying.

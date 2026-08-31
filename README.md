@@ -115,10 +115,10 @@ that one object runs the entire interface in an ordinary browser tab.
 The builder edits your real working tree, so its blast radius is contained twice. The layers
 are not redundant — each catches what the other structurally cannot.
 
-**Layer 1 — the OS sandbox.** `sandbox: { enabled: true }` on the Agent SDK. Kernel-enforced,
-not defeatable by clever quoting. Owns *location*: what the builder can reach.
-**Currently off by default because it hangs** — see Status. Turn it on with `sandbox: true`
-once you have verified it works on your setup.
+**Layer 1 — the OS sandbox.** `sandbox: { enabled: true }` on the Agent SDK, on by default.
+Kernel-enforced, not defeatable by clever quoting. Owns *location*: what the builder can reach.
+Measured: `node -e "fs.writeFileSync('/tmp/x')"` writes the file with it off and fails with
+`EPERM` from the kernel with it on.
 
 **Read-only until you decide.** While you are still talking, bash runs against an
 *allowlist* — `ls`, `cat`, `grep`, `find`, `sed -n`, `git` reads and friends. Everything else
@@ -138,11 +138,9 @@ and `cat ~/.ssh/id_rsa` were allowed during the build phase — the one phase wh
 actually change. `shell.ts` enumerated every command hidden in a pipeline and then did nothing
 with the arguments it had extracted.
 
-**What this still does not stop.** In build mode, script interpreters are legitimately needed
-(tests, build scripts) and cannot be allowlisted away, so `node -e "fs.writeFileSync('/etc/x')"`
-remains reachable. No amount of string analysis closes that; it is the OS sandbox's job, and
-the OS sandbox is currently off (see Status). Layer 2 raises the floor a long way — it is not
-a ceiling, and this README will not pretend otherwise.
+**Where the two meet.** Build mode legitimately needs script interpreters — tests, build
+scripts — so no allowlist can keep `node -e` out, and no string analysis reaches inside one.
+That escape is closed by layer 1, at the syscall, which is why it is on.
 
 **Layer 2 — the policy** (`policy.ts`). Owns *meaning*: constraints a filesystem sandbox
 cannot express. The load-bearing case is git. `git commit` and `git reset --hard` write only
@@ -265,7 +263,7 @@ calls.
 | Electron app + IPC + transcript UI | verified against the recorded fixture |
 | Conversation mode (chat → decide → build) | UI and policy verified; the live chat turn shares the builder blocker below |
 | `builder.ts` Claude drive | **unverified** — blocked on Claude account credit balance |
-| OS sandbox (`sandbox: true`) | **broken on this setup — off by default.** On claude-agent-sdk 0.1.77 / macOS 25.6, `query()` emits `system:init` at ~0.6s and then never yields again. The identical call without it returns in 3.7s. Worse, the hang swallows account errors, so a failed run is indistinguishable from a slow one. Layer 2 runs either way; location containment currently rests on the policy's lexical path checks. |
+| OS sandbox (`sandbox: true`) | verified, **on by default** — blocks an out-of-project write with `EPERM`, and a full build with tests runs under it untouched |
 | Full loop end-to-end | **unverified** — same blocker |
 | Electron desktop UI | not started |
 
@@ -289,6 +287,15 @@ means the input was wrong, not that the work was.
 
 Stopping mid-build keeps whatever the builder already wrote and snapshots it, so you can see
 what landed. It is an abandon, not a pause: there is no resume point inside a model turn.
+
+**A measurement is only as good as the thing it measured.** The sandbox was off for a while on
+the strength of a real observation drawn from a broken setup: a sandboxed `query()` emitted
+`system:init` and never yielded again, so "the sandbox hangs" went into this file. Two things
+were wrong with the setup — the account had no plan attached, and the call ran against the
+SDK's *bundled* cli.js rather than the Claude Code the user is signed in to. It is the bundled
+binary that hangs (nothing ends it, not even an AbortController). Against 2.1.247 the same call
+returns in 4.9s. By the time the auth work had switched CodeArena to the user's own binary the
+degradation had already gone; nobody re-measured for hours.
 
 **A hung SDK looks exactly like a slow model.** There is a watchdog, but it is deliberately
 generous (15 minutes). Messages arrive between tool calls, not during them, so the timer
