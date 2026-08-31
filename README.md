@@ -114,11 +114,29 @@ not defeatable by clever quoting. Owns *location*: what the builder can reach.
 **Currently off by default because it hangs** — see Status. Turn it on with `sandbox: true`
 once you have verified it works on your setup.
 
-**Read-only until you decide.** While you are still talking, the policy runs in `readOnly`
-mode: `Write`/`Edit` are denied outright, and so is every bash route to the same thing —
-`rm`, `mv`, `mkdir`, `tee`, `sed -i`, and `>`/`>>` redirects anywhere in a command chain.
-Reads, greps and `git log` stay available, because a builder that cannot read cannot help you
-think.
+**Read-only until you decide.** While you are still talking, bash runs against an
+*allowlist* — `ls`, `cat`, `grep`, `find`, `sed -n`, `git` reads and friends. Everything else
+is denied, script interpreters included: `python3 -c "open('x','w')…"` and `node -e "…"` walk
+straight through any denylist of shell verbs, and the chat phase has no need to execute code.
+`npm test` is denied here too, for the same reason — it runs whatever `package.json` says.
+
+**Path containment.** Every bash command, in both modes, is checked for credential paths
+(`~/.ssh`, `~/.aws`, `~/.codex/auth.json`, …) and for writes landing outside the project —
+including redirect targets, which name no command at all (`echo x >> ~/.zshrc` has argv
+`["echo", "x"]`). Also denied: piping a download into a shell, and `curl`/`wget` upload flags.
+
+*This was missing entirely until CodeArena reviewed its own source.* `checkSegment` inspected
+command names and git subcommands and never once called the path checks, so `Write` to
+`~/.zshrc` was denied while `echo pwned >> ~/.zshrc` was allowed, and `rm -rf ~/Documents`
+and `cat ~/.ssh/id_rsa` were allowed during the build phase — the one phase where files
+actually change. `shell.ts` enumerated every command hidden in a pipeline and then did nothing
+with the arguments it had extracted.
+
+**What this still does not stop.** In build mode, script interpreters are legitimately needed
+(tests, build scripts) and cannot be allowlisted away, so `node -e "fs.writeFileSync('/etc/x')"`
+remains reachable. No amount of string analysis closes that; it is the OS sandbox's job, and
+the OS sandbox is currently off (see Status). Layer 2 raises the floor a long way — it is not
+a ceiling, and this README will not pretend otherwise.
 
 **Layer 2 — the policy** (`policy.ts`). Owns *meaning*: constraints a filesystem sandbox
 cannot express. The load-bearing case is git. `git commit` and `git reset --hard` write only
@@ -137,7 +155,7 @@ overridable.
 Layer 2 analyses shell strings, and string analysis of shell is not a security control — it
 enumerates commands hidden in pipelines, `;` chains, `$(...)` and backticks precisely because
 prefix-matching is trivially evaded, but Layer 1 is what actually holds. `npm run test:policy`
-covers 84 cases, roughly half of them evasion attempts.
+covers 109 cases, roughly half of them evasion attempts.
 
 **One non-obvious interaction:** the SDK's `autoAllowBashIfSandboxed` looks like a free
 convenience, but auto-approved calls bypass `canUseTool` — which would silently disable
@@ -186,7 +204,7 @@ calls.
 
 | Component | State |
 |---|---|
-| `policy.ts` + `shell.ts` guardrails | verified — `npm run test:policy` (84 assertions) |
+| `policy.ts` + `shell.ts` guardrails | verified — `npm run test:policy` (109 assertions) |
 | `git.ts` snapshot / diff / rollback | verified — `npm run test:git` (13 assertions) |
 | `gatekeeper.ts` Codex review + structured verdict | verified live — `npm run test:gatekeeper <repo>` |
 | `codex-path.ts` signed-binary resolution | verified |

@@ -25,7 +25,7 @@
  */
 import path from "node:path";
 import os from "node:os";
-import { parseCommands, basename, type Segment } from "./shell.js";
+import { parseCommands, basename, redirectTargets, type Segment } from "./shell.js";
 
 export type Decision = { allow: true } | { allow: false; reason: string };
 
@@ -133,6 +133,26 @@ const PUBLISH: Array<{ match: (argv: string[]) => boolean; what: string }> = [
   { match: (a) => basename(a[0]!) === "twine" && a[1] === "upload", what: "a PyPI upload" },
 ];
 
+/**
+ * Commands a read-only conversation may run.
+ *
+ * An allowlist, not a denylist, and that asymmetry is deliberate. "Nothing is written until
+ * you decide" is the promise the conversation-first design rests on, and a denylist only ever
+ * promises "we blocked the spellings we thought of". `python3 -c "open('x','w').write(...)"`
+ * and `node -e "fs.writeFileSync(...)"` walk straight through a denylist of shell verbs; the
+ * chat phase has no need to execute code, so the honest shape here is to deny by default.
+ *
+ * `git` is absent because it is adjudicated separately, by subcommand.
+ */
+const READONLY_COMMANDS = new Set([
+  "ls", "cat", "bat", "head", "tail", "wc", "file", "stat", "du", "df", "pwd", "echo",
+  "printf", "date", "which", "type", "env", "basename", "dirname", "realpath", "readlink",
+  "find", "fd", "grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "sort", "uniq",
+  "cut", "tr", "diff", "comm", "join", "paste", "column", "nl", "od", "xxd", "strings",
+  "jq", "yq", "tree", "true", "false", "test", "expr", "seq", "sha256sum", "shasum", "md5",
+  "uname", "hostname", "whoami", "id", "tty", "sleep",
+]);
+
 /** Commands that modify the filesystem. Denied in read-only mode. */
 const MUTATING_COMMANDS = new Set([
   "rm", "rmdir", "mv", "cp", "touch", "mkdir", "ln", "install", "truncate", "shred",
@@ -171,6 +191,31 @@ function hasRedirect(raw: string): boolean {
   }
   return false;
 }
+
+/**
+ * argv entries that look like filesystem paths.
+ *
+ * Over-reports: a bare word that happens to name a file is indistinguishable from an argument.
+ * That is the right direction to err -- an extra containment check on a non-path costs
+ * nothing, since a non-path resolves inside the project and passes.
+ */
+function pathLikeTokens(argv: string[]): string[] {
+  return argv.slice(1).filter(
+    (t) =>
+      !t.startsWith("-") &&
+      (t.startsWith("/") || t.startsWith("~") || t.startsWith("./") || t.startsWith("../") ||
+        t.includes("/")),
+  );
+}
+
+/** Commands whose non-flag arguments name things they will write to or destroy. */
+const WRITE_TARGET_COMMANDS = new Set([
+  ...MUTATING_COMMANDS,
+  "sed", "perl", "ruby", // only reachable here with -i; see editsInPlace
+]);
+
+/** Uploading a local file is exfiltration regardless of where it is going. */
+const UPLOAD_FLAGS = new Set(["-T", "--upload-file", "-d", "--data", "--data-binary", "-F", "--form"]);
 
 // ---------------------------------------------------------------------------------------
 // paths
@@ -282,22 +327,103 @@ export class Policy {
     return ALLOW;
   }
 
+  /**
+   * Credential reads and out-of-project writes, for one command.
+   *
+   * Credentials are denied to every command, read or write, in both modes -- a chat turn has
+   * no business opening ~/.ssh any more than a build does. Containment is applied to writes
+   * only: reading a file outside the project is how a builder learns about its toolchain,
+   * and denying it would be the plan-mode read ban all over again.
+   */
+  private checkPaths(cmd: string, argv: string[], redirects: string[]): Decision | null {
+    const args = pathLikeTokens(argv);
+
+    for (const token of [...args, ...redirects]) {
+      const cred = touchesCredentials(this.resolve(token));
+      if (cred) {
+        return deny(`${cred} holds credentials and is not available to \`${cmd}\`.`);
+      }
+    }
+
+    // A redirect writes, whatever the command in front of it is.
+    for (const target of redirects) {
+      const abs = this.resolve(target);
+      if (!isInside(this.projectDir, abs)) {
+        return deny(
+          `That command writes to ${abs}, outside the project directory ` +
+            `(${this.projectDir}). Keep changes inside the project.`,
+        );
+      }
+    }
+
+    if (WRITE_TARGET_COMMANDS.has(cmd)) {
+      for (const token of args) {
+        const abs = this.resolve(token);
+        if (!isInside(this.projectDir, abs)) {
+          return deny(
+            `\`${cmd}\` would modify ${abs}, outside the project directory ` +
+              `(${this.projectDir}).`,
+          );
+        }
+      }
+    }
+
+    return null;
+  }
+
   private checkSegment(segment: Segment): Decision {
     const argv = segment.argv;
     const cmd = basename(argv[0] ?? "");
 
+    // Path containment runs in BOTH modes and before anything else.
+    //
+    // It used to run in neither. `checkSegment` inspected command names, publish verbs and git
+    // subcommands, and never once called touchesCredentials or isInside -- so `Write` to
+    // ~/.zshrc was denied while `echo pwned >> ~/.zshrc` was allowed, and `rm -rf ~/Documents`
+    // and `cat ~/.ssh/id_rsa` sailed through during the build phase, which is precisely the
+    // phase where bash is busiest. shell.ts spent 228 lines enumerating every command hidden
+    // in a pipeline and then did nothing with the arguments it had extracted.
+    const targets = redirectTargets(segment.raw);
+    const denial = this.checkPaths(cmd, argv, targets);
+    if (denial) return denial;
+
     if (this.options.readOnly) {
-      if (MUTATING_COMMANDS.has(cmd)) {
+      // Allowlist. Unknown commands are denied here, including every script interpreter --
+      // see READONLY_COMMANDS for why this one is not a denylist.
+      if (cmd !== "git" && !READONLY_COMMANDS.has(cmd)) {
         return deny(
-          `\`${cmd}\` modifies the filesystem. Nothing is written until you decide to ` +
-            `build — we are still talking it through.`,
+          `\`${cmd}\` is not one of the read-only commands available while we are still ` +
+            `talking. Nothing is written until you decide to build. If you need it to answer ` +
+            `the question, say so and I will decide.`,
         );
       }
       if (editsInPlace(argv)) {
         return deny(`\`${cmd} -i\` edits files in place; nothing is written yet.`);
       }
-      if (hasRedirect(segment.raw)) {
+      if (targets.length > 0) {
         return deny(`That command redirects output into a file; nothing is written yet.`);
+      }
+    }
+
+    // `curl … | bash` -- the parser splits the pipe, so a shell with no script argument is
+    // reading its program from the pipe.
+    if (["sh", "bash", "zsh", "dash", "ksh"].includes(cmd)) {
+      const hasScript = argv.slice(1).some((a) => !a.startsWith("-"));
+      if (!hasScript) {
+        return deny(
+          `Piping a downloaded script straight into \`${cmd}\` runs code nobody has read. ` +
+            `Download it to the project and run it as a file if you need it.`,
+        );
+      }
+    }
+
+    if (!this.options.allowPublish && (cmd === "curl" || cmd === "wget")) {
+      const uploading = argv.some((a) => UPLOAD_FLAGS.has(a) || a.startsWith("--data"));
+      if (uploading) {
+        return deny(
+          `\`${cmd}\` is being used to upload data. Sending anything out of this machine is ` +
+            `a human decision.`,
+        );
       }
     }
 
@@ -326,14 +452,12 @@ export class Policy {
       const sub = gitSubcommand(argv);
       if (sub === null) return ALLOW;
       if (GIT_READ_SUBCOMMANDS.has(sub)) return ALLOW;
-      if (GIT_HISTORY_WRITES.has(sub) || !GIT_READ_SUBCOMMANDS.has(sub)) {
-        return deny(
-          `\`git ${sub}\` changes git state. CodeArena owns the repository's git state: it ` +
-            `snapshots your work to produce the review diff and to roll back if the review ` +
-            `fails, and a commit, reset or checkout mid-task invalidates that baseline. ` +
-            `Edit files; leave git to CodeArena. (git status/diff/log/show are available.)`,
-        );
-      }
+      return deny(
+        `\`git ${sub}\` changes git state. CodeArena owns the repository's git state: it ` +
+          `snapshots your work to produce the review diff and to roll back if the review ` +
+          `fails, and a commit, reset or checkout mid-task invalidates that baseline. ` +
+          `Edit files; leave git to CodeArena. (git status/diff/log/show are available.)`,
+      );
     }
 
     return ALLOW;
