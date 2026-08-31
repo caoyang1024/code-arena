@@ -460,6 +460,16 @@ function Arena() {
 
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  /**
+   * True while an input method is composing.
+   *
+   * keydown fires during composition, so an unguarded Enter handler sends the message while
+   * the user is still choosing characters -- typing Chinese, Japanese or Korean meant every
+   * Enter that should have picked a candidate sent the raw pinyin instead. `isComposing` on
+   * the native event is the modern signal; keyCode 229 is the legacy one browsers still emit;
+   * the composition events are the belt-and-braces for anything that reports neither.
+   */
+  const composing = useRef(false);
   /** Read inside long-lived listeners, which must not close over a stale projectDir. */
   const projectDirRef = useRef(projectDir);
   useEffect(() => {
@@ -853,12 +863,22 @@ function Arena() {
                   : "Choose a project to begin…"
             }
             onChange={(e) => setDraft(e.target.value)}
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              const midComposition =
+                composing.current || e.nativeEvent.isComposing || e.keyCode === 229;
+
+              if (e.key === "Enter" && !e.shiftKey && !midComposition) {
                 e.preventDefault();
                 void send();
               }
-              if (e.key === "Escape" && running) {
+              // Escape closes the candidate window; it must not also stop the turn.
+              if (e.key === "Escape" && running && !midComposition) {
                 e.preventDefault();
                 void stop();
               }

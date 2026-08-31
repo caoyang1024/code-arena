@@ -241,6 +241,12 @@ orchestrator hands that string to the gatekeeper as if it were a plan. `builder.
 matches a short, single-turn, tool-free result against known account-failure phrasings and
 throws instead. It is a heuristic; a new phrasing will slip through until it is added.
 
+**Input methods work.** `keydown` fires during IME composition, so an unguarded Enter handler
+sends the message while you are still choosing characters — typing Chinese meant every Enter
+that should have picked a candidate sent the raw pinyin instead. Enter and Escape are both
+guarded by `isComposing`, `keyCode === 229`, and the composition events, because no single one
+of those is reported everywhere.
+
 **You can stop a turn.** `Stop`, or `Esc` in the composer. The message you sent goes back into
 the box so a typo can be fixed and resent rather than retyped — reaching for Stop almost always
 means the input was wrong, not that the work was.
