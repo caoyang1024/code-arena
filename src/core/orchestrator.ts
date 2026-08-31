@@ -68,6 +68,52 @@ export async function runChat(
 }
 
 /**
+ * A second opinion on the reasoning so far, and the builder's answer to it.
+ *
+ * One action, two turns: the reviewer critiques, the builder takes a position. Nothing is
+ * written and nothing is gated -- the point is to put a disagreement in front of the engineer
+ * while it is still cheap, before a plan exists to be defended.
+ *
+ * Both models are read-only throughout.
+ */
+export async function runSecondOpinion(
+  config: ArenaConfig,
+  emit: (event: ArenaEvent) => void,
+  sessionId: string | null,
+  conversation: string,
+  control?: TurnControl,
+): Promise<string | null> {
+  const gate = new Gatekeeper(config, control);
+  try {
+    emit({ type: "phase", phase: "second_opinion", round: 1 });
+    const opinion = await gate.secondOpinion(conversation, emit);
+    emit({ type: "gatekeeper.text", text: opinion });
+
+    if (control?.signal.aborted) {
+      emit({ type: "cancelled", phase: "second_opinion" });
+      return sessionId;
+    }
+
+    emit({ type: "phase", phase: "chatting", round: 1 });
+    const turn = await builder.respondToOpinion(opinion, config, emit, sessionId, control);
+    if (turn.cancelled) emit({ type: "cancelled", phase: "chatting" });
+    emit({ type: "session", sessionId: turn.sessionId });
+    return turn.sessionId;
+  } catch (error) {
+    if (error instanceof Cancelled || control?.signal.aborted) {
+      emit({ type: "cancelled", phase: "second_opinion" });
+      return sessionId;
+    }
+    emit({
+      type: "log",
+      level: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return sessionId;
+  }
+}
+
+/**
  * The pipeline, entered when the engineer decides to build.
  *
  * `instruction` is optional: with an open conversation behind it, "build what we discussed"

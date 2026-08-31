@@ -948,3 +948,16 @@ button.danger:hover:not(:disabled) {
   padding: 3px 6px;
   outline: none;
 }
+
+/* A peer of Build this, not a primary: it costs a reviewer turn and settles nothing on
+   its own -- it puts a disagreement in front of you while it is still cheap. */
+.decision-alt {
+  background: transparent;
+  border-color: rgba(46, 196, 166, 0.4);
+  color: var(--gatekeeper);
+}
+.decision-alt:hover:not(:disabled) {
+  background: var(--gatekeeper-soft);
+  border-color: var(--gatekeeper);
+  color: var(--gatekeeper);
+}

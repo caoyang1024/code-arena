@@ -11,6 +11,7 @@
 
 export type Phase =
   | "chatting"
+  | "second_opinion"
   | "planning"
   | "plan_review"
   | "implementing"
@@ -92,6 +93,8 @@ export type ArenaEvent =
   | { type: "builder.tool"; name: string; input: unknown }
   | { type: "builder.permission"; name: string; decision: "allow" | "deny"; reason?: string }
   | { type: "gatekeeper.item"; kind: string; text: string }
+  /** The reviewer speaking in prose rather than returning a verdict. */
+  | { type: "gatekeeper.text"; text: string }
   | { type: "review"; phase: Phase; review: Review }
   | { type: "snapshot"; ref: string; label: string }
   | { type: "cost"; cost: Cost }

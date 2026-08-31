@@ -31,6 +31,10 @@ const api = {
   build: (opts: TurnOptions & { instruction?: string; demo?: boolean }): Promise<Started> =>
     ipcRenderer.invoke("arena:build", opts),
 
+  /** Have the reviewer weigh in on the reasoning, then the builder answer it. */
+  secondOpinion: (opts: TurnOptions): Promise<Started> =>
+    ipcRenderer.invoke("arena:secondOpinion", opts),
+
   /** Stop the turn in flight. Safe to call when nothing is running. */
   stop: (): Promise<{ stopped: boolean }> => ipcRenderer.invoke("arena:stop"),
 

@@ -117,6 +117,68 @@ export class Gatekeeper {
     return parseReview(final);
   }
 
+  /**
+   * A second opinion on the builder's reasoning, before anything is planned or built.
+   *
+   * The pipeline only ever checked plans and diffs, but the judgements that decide whether
+   * the work is worth doing happen earlier -- is this our bug, should this throw or return a
+   * sentinel, is the premise even right. Those went unchecked, and a flawless review of a
+   * plan built on a wrong diagnosis is a careful answer to the wrong question.
+   *
+   * No verdict schema here: nothing is being gated, so a verdict would be theatre. This
+   * returns prose, and its value is that it was formed without the builder's framing.
+   */
+  async secondOpinion(conversation: string, emit: Emit): Promise<string> {
+    const thread = this.newThread();
+    const prompt = [
+      `You are the second model on a two-model engineering team. Below is a conversation
+between an engineer and the other model. You are not reviewing code and nothing is being
+approved -- you are being asked whether the reasoning holds.`,
+      "",
+      "The lines marked ENGINEER are the requirement. The lines marked IMPLEMENTER are the",
+      "other model's claims -- treat them as claims, not as established fact, and check them",
+      "against the repository, which you can read.",
+      "",
+      "Say, briefly and in this order:",
+      "  1. Where you agree, and what you verified to be sure.",
+      "  2. Where you disagree or think a claim is unsupported, with the evidence.",
+      "  3. What neither of them has considered that matters here.",
+      "",
+      "Rules: read the code before asserting anything about it, and quote what you read.",
+      "Do not restate the conversation. Do not hedge to be agreeable -- agreeing with a",
+      "wrong diagnosis is the failure mode this whole arrangement exists to prevent. If you",
+      "think the engineer's premise is wrong, say that too.",
+      "",
+      "--- CONVERSATION ---",
+      conversation,
+    ].join("\n");
+
+    const { events } = await thread.runStreamed(prompt);
+    let final = "";
+    for await (const event of events) {
+      if (this.control?.signal.aborted) throw new Cancelled();
+      if (event.type === "item.completed") {
+        const item = event.item;
+        if (item.type === "agent_message") final = item.text;
+        else if (item.type === "command_execution") {
+          emit({ type: "gatekeeper.item", kind: "command", text: item.command });
+        } else if (item.type === "error") {
+          emit({ type: "gatekeeper.item", kind: "error", text: item.message });
+        }
+      } else if (event.type === "turn.completed") {
+        this.inputTokens += event.usage.input_tokens;
+        this.cachedInputTokens += event.usage.cached_input_tokens;
+        this.outputTokens += event.usage.output_tokens;
+      } else if (event.type === "turn.failed") {
+        throw new Error(`Gatekeeper turn failed: ${event.error.message}`);
+      } else if (event.type === "error") {
+        throw new Error(`Gatekeeper stream error: ${event.message}`);
+      }
+    }
+    if (!final.trim()) throw new Error("Gatekeeper returned an empty second opinion");
+    return final;
+  }
+
   /** Review the builder's plan before a single file is touched. */
   async reviewPlan(task: string, plan: string, emit: Emit, conversation?: string): Promise<Review> {
     // One thread across all plan rounds, so round 2 knows what it asked for in round 1.

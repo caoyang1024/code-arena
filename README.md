@@ -110,6 +110,32 @@ npx vite
 then open `/preview.html`. The renderer touches Node only through `window.arena`, so stubbing
 that one object runs the entire interface in an ordinary browser tab.
 
+## Second opinion
+
+Under any reply the builder gives, alongside **Build this**, sits **Second opinion**. One
+click runs two turns: the reviewer says what it makes of the reasoning, having read the
+repository itself, and the builder then takes a position on each point. Nothing is written and
+nothing is gated — it puts a disagreement in front of you while it is still cheap.
+
+The pipeline only ever checked plans and diffs. But the judgements that decide whether the
+work is worth doing happen before either exists — is this our bug, should it throw or return a
+sentinel, is the premise even right — and a flawless review of a plan built on a wrong
+diagnosis is a careful answer to the wrong question.
+
+Both prompts fight the same failure. A model told it is wrong will usually agree, because
+agreeing is cheap and reads as humility; two models agreeing because one folded is worse than
+one model working alone, since the answer now carries a false endorsement. So the builder is
+told that being contradicted is not evidence it was wrong, and the reviewer is told not to
+agree to be agreeable — including with the engineer.
+
+In the run this was built from, the engineer said the fix was obviously "just add an `if`".
+The reviewer disputed *that*, then found that `average` iterates with `for...of` while
+counting with `.length`, so an empty `Set` returns `NaN` too. The builder verified each point
+by running the code: it conceded that one, conceded that it had overstated what the README
+settled, and refused a third where the reviewer had mistaken a behaviour change for a
+regression. The empty array was never the bug; it was the most visible exit from one. None of
+that cost a byte of the working tree.
+
 ## Two layers of containment
 
 The builder edits your real working tree, so its blast radius is contained twice. The layers

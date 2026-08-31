@@ -100,6 +100,29 @@ reviewer later.
 
 Do not produce an implementation plan unless asked. The engineer decides when to build.`;
 
+/**
+ * Answering the second opinion.
+ *
+ * The whole arrangement is worth nothing if the builder simply capitulates. A model told it
+ * is wrong will usually agree -- that is the cheapest response and it reads as humility --
+ * and two models agreeing because one folded is worse than one model working alone, since it
+ * now carries a false endorsement. So this asks for a position, item by item, and makes
+ * disagreeing an explicitly acceptable answer.
+ */
+const SECOND_OPINION_PREAMBLE = `A second model, from a different vendor, was shown this
+conversation and asked whether your reasoning holds. It read the repository itself. Its
+response is below.
+
+Take a position on each point it raises. For each one, say whether you accept it, and why.
+
+Do not simply agree. If a point is wrong, or rests on something it misread, say so and show
+what it missed -- being contradicted is not evidence that you were wrong, and folding to
+sound agreeable would waste the only thing this second opinion is good for. Equally, if it
+caught something real, say so plainly and without ceremony.
+
+End by stating where the two of you actually stand: what you now believe, and what remains
+genuinely undecided for the engineer to settle.`;
+
 const PLAN_PREAMBLE = `The engineer has decided to build what you just discussed. Write the
 implementation plan now.
 
@@ -324,6 +347,22 @@ async function drive(
 
 // -----------------------------------------------------------------------------------------
 // the four things the builder is asked to do
+
+/** Answer the reviewer's critique of the reasoning. Read-only, like the rest of the talking. */
+export function respondToOpinion(
+  opinion: string,
+  config: ArenaConfig,
+  emit: Emit,
+  sessionId: string | null,
+  control?: TurnControl,
+): Promise<BuilderTurn> {
+  const prompt = [SECOND_OPINION_PREAMBLE, "", "--- THE SECOND OPINION ---", opinion].join("\n");
+  return drive(prompt, config, emit, {
+    mode: "chat",
+    resume: sessionId,
+    ...(control ? { control } : {}),
+  });
+}
 
 /** An ordinary conversational turn. Read-only; no gatekeeper involved. */
 export function chat(

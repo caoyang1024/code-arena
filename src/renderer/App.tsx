@@ -33,6 +33,7 @@ interface ArenaApi {
   build(
     opts: TurnOptions & { instruction?: string; demo?: boolean },
   ): Promise<{ started: boolean; reason?: string }>;
+  secondOpinion(opts: TurnOptions): Promise<{ started: boolean; reason?: string }>;
   stop(): Promise<{ stopped: boolean }>;
   reset(): Promise<void>;
   loginStart(email?: string): Promise<{ ok: boolean; url?: string; reason?: string }>;
@@ -61,7 +62,16 @@ declare global {
 type Block =
   | { kind: "user"; id: number; text: string }
   | { kind: "builder"; id: number; phase: Phase; round: number; text: string; tools: string[] }
-  | { kind: "gatekeeper"; id: number; phase: Phase; round: number; commands: string[]; review?: Review }
+  | {
+      kind: "gatekeeper";
+      id: number;
+      phase: Phase;
+      round: number;
+      commands: string[];
+      review?: Review;
+      /** Set when the reviewer answered in prose instead of a verdict. */
+      prose?: string;
+    }
   | { kind: "denial"; id: number; name: string; reason: string }
   | { kind: "snapshot"; id: number; ref: string; label: string }
   | { kind: "outcome"; id: number; result: TaskResult }
@@ -135,6 +145,13 @@ function reduce(blocks: Block[], event: ArenaEvent): Block[] {
       if (event.decision !== "deny" || !event.reason) return blocks;
       return [...blocks, { kind: "denial", id: nextId++, name: event.name, reason: event.reason }];
 
+    case "gatekeeper.text": {
+      const i = lastIndexOfKind(blocks, "gatekeeper");
+      const block = blocks[i];
+      if (block?.kind !== "gatekeeper") return blocks;
+      return replaceAt(blocks, i, { ...block, prose: event.text });
+    }
+
     case "gatekeeper.item": {
       if (event.kind !== "command") return blocks;
       const i = lastIndexOfKind(blocks, "gatekeeper");
@@ -184,6 +201,7 @@ function shortenPath(p: string): string {
 
 const PHASE_LABEL: Partial<Record<Phase, string>> = {
   chatting: "thinking it through",
+  second_opinion: "a second opinion",
   planning: "planning",
   implementing: "implementing",
   plan_review: "reviewing the plan",
@@ -297,6 +315,11 @@ function BlockView({ block, projectDir }: { block: Block; projectDir: string }) 
                     {c.length > 56 ? `${c.slice(0, 56)}…` : c}
                   </span>
                 ))}
+              </div>
+            )}
+            {block.prose && (
+              <div className="card-body">
+                <RichText text={block.prose.trim()} />
               </div>
             )}
             {review && (
@@ -491,12 +514,14 @@ function Outcome({
  */
 function BuildDecision({
   onBuild,
+  onSecondOpinion,
   note,
   onNote,
   rounds,
   onRounds,
 }: {
   onBuild: () => void;
+  onSecondOpinion: () => void;
   note: string;
   onNote: (v: string) => void;
   rounds: number;
@@ -507,6 +532,15 @@ function BuildDecision({
     <div className="decision">
       <button className="decision-go" onClick={onBuild}>
         Build this
+      </button>
+      {/*
+        The reviewer only ever saw plans and diffs. The judgements that decide whether the
+        work is worth doing happen before either exists -- is this our bug, should it throw --
+        and a flawless review of a plan built on a wrong diagnosis is a careful answer to the
+        wrong question. This is the cheap place to find that out.
+      */}
+      <button className="decision-alt" onClick={onSecondOpinion}>
+        Second opinion
       </button>
       {/*
         Not a dollar figure. total_cost_usd is what the work would have cost at API rates,
@@ -836,6 +870,15 @@ function Arena() {
     }
   }, [running]);
 
+  /** Ask the reviewer what it makes of the reasoning; the builder then answers it. */
+  const secondOpinion = useCallback(async () => {
+    if (running || !projectDir) return;
+    pinned.current = true;
+    setRunning(true);
+    const res = await window.arena.secondOpinion(turnOptions);
+    if (!res.started) fail(res.reason ?? "Could not start.");
+  }, [running, projectDir, turnOptions, fail]);
+
   const restart = useCallback(async () => {
     if (running) return;
     await window.arena.reset();
@@ -967,6 +1010,7 @@ function Arena() {
               <BuildDecision
                 onBuild={() => void build()}
                 note={focus}
+                onSecondOpinion={() => void secondOpinion()}
                 onNote={setFocus}
                 rounds={maxRounds}
                 onRounds={setMaxRounds}

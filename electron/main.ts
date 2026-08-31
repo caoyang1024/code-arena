@@ -9,7 +9,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runChat, runBuild } from "../src/core/orchestrator.js";
+import { runChat, runBuild, runSecondOpinion } from "../src/core/orchestrator.js";
 import { resolveCodex } from "../src/core/codex-path.js";
 import { resolveClaude } from "../src/core/claude-path.js";
 import { startLogin, type LoginHandle } from "../src/core/claude-login.js";
@@ -352,6 +352,51 @@ ipcMain.handle("arena:stop", async (): Promise<{ stopped: boolean }> => {
   turn.abort();
   return { stopped: true };
 });
+
+/**
+ * Ask the reviewer what it makes of the reasoning, then have the builder answer it.
+ *
+ * Read-only on both sides. The conversation goes to the reviewer, as it does for a build.
+ */
+ipcMain.handle(
+  "arena:secondOpinion",
+  async (event, opts: TurnOptions): Promise<{ started: boolean; reason?: string }> => {
+    if (running) return { started: false, reason: "Still working on the previous turn." };
+    if (transcript.length === 0) return { started: false, reason: "Nothing discussed yet." };
+    ensureProject(opts.projectDir);
+
+    const codex = await resolveCodex();
+    if (!codex?.loggedIn) return { started: false, reason: "Reviewer unavailable — check Setup." };
+
+    let reply = "";
+    const send = (e: ArenaEvent) => {
+      if (e.type === "builder.text") reply += e.text;
+      if (e.type === "gatekeeper.text") transcript.add("implementer", `[second opinion] ${e.text}`);
+      event.sender.send("arena:event", e);
+    };
+
+    running = true;
+    turn = new AbortController();
+    void runSecondOpinion(
+      await configFor(opts, codex.path),
+      send,
+      session,
+      transcript.render(),
+      { signal: turn.signal },
+    )
+      .then((next) => {
+        session = next;
+        transcript.add("implementer", reply);
+      })
+      .finally(() => {
+        running = false;
+        turn = null;
+        event.sender.send("arena:idle", true);
+      });
+
+    return { started: true };
+  },
+);
 
 ipcMain.handle("arena:reset", async () => {
   session = null;
