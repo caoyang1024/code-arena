@@ -526,11 +526,13 @@ function BuildDecision({
   note,
   onNote,
   rounds,
+  onRounds,
 }: {
   onBuild: () => void;
   note: string;
   onNote: (v: string) => void;
   rounds: number;
+  onRounds: (n: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -547,19 +549,32 @@ function BuildDecision({
       <span className="decision-price">a full build · up to {rounds} rounds each way</span>
       <div className="spacer" />
       <button className="link" onClick={() => setOpen((v) => !v)}>
-        {open ? "− focus" : "+ focus"}
+        {open ? "− options" : "+ options"}
       </button>
       {open && (
-        <input
-          className="decision-note"
-          value={note}
-          autoFocus
-          placeholder="Anything the reviewer should look at especially closely?"
-          onChange={(e) => onNote(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) onBuild();
-          }}
-        />
+        <>
+          <input
+            className="decision-note"
+            value={note}
+            autoFocus
+            placeholder="Anything the reviewer should look at especially closely?"
+            onChange={(e) => onNote(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) onBuild();
+            }}
+          />
+          <label className="decision-rounds">
+            give up after
+            <input
+              type="number"
+              min={1}
+              max={8}
+              value={rounds}
+              onChange={(e) => onRounds(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
+            />
+            rounds each way
+          </label>
+        </>
       )}
     </div>
   );
@@ -619,7 +634,6 @@ function Arena() {
 
   const [draft, setDraft] = useState("");
   const [maxRounds, setMaxRounds] = useState(3);
-  const [skipPlanReview, setSkipPlanReview] = useState(false);
   /** True once the conversation has something in it worth building. */
   const [hasContext, setHasContext] = useState(false);
   /** Optional steer for the reviewer. A setting on this build, not a message to anyone. */
@@ -742,8 +756,11 @@ function Arena() {
   }, []);
 
   const turnOptions = useMemo(
-    () => ({ projectDir, maxRounds, skipPlanReview }),
-    [projectDir, maxRounds, skipPlanReview],
+    // Reviewing the plan is the point of the product, not a preference. It used to be a
+    // permanently visible checkbox that nobody touched, and turning it off also made the
+    // phase rail advertise a step that would never run.
+    () => ({ projectDir, maxRounds, skipPlanReview: false }),
+    [projectDir, maxRounds],
   );
 
   const fail = useCallback((reason: string) => {
@@ -914,17 +931,36 @@ function Arena() {
                   <span className="menu-name">New project…</span>
                   <span className="menu-path">creates the folder and runs git init</span>
                 </div>
+                <div className="menu-sep" />
+                <div
+                  className="menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void restart();
+                  }}
+                >
+                  <span className="menu-name">New conversation</span>
+                  <span className="menu-path">forget what we discussed</span>
+                </div>
               </div>
             </>
           )}
         </div>
         <div className="spacer" />
-        <div className="status">
-          <span
-            className={`dot${running ? " live" : ready ? "" : " warn"}`}
-          />
+        {/*
+          Setup used to be a permanent link in the composer. It is only ever wanted when
+          something is broken, and the status pill already says so -- so the pill is the way
+          in, and only when there is something to fix.
+        */}
+        <button
+          className={`status${ready ? " status-ok" : " status-actionable"}`}
+          onClick={() => !ready && setShowSetup((v) => !v)}
+          disabled={ready}
+          title={ready ? undefined : "Show what needs fixing"}
+        >
+          <span className={`dot${running ? " live" : ready ? "" : " warn"}`} />
           {statusText}
-        </div>
+        </button>
       </div>
 
       <PhaseRail current={phase} round={round} />
@@ -952,6 +988,7 @@ function Arena() {
                 note={focus}
                 onNote={setFocus}
                 rounds={maxRounds}
+                onRounds={setMaxRounds}
               />
             )}
           </>
@@ -1086,38 +1123,6 @@ function Arena() {
               Send
             </button>
           )}
-        </div>
-        <div className="composer-meta">
-          <label>
-            max rounds
-            <input
-              type="number"
-              min={1}
-              max={8}
-              value={maxRounds}
-              onChange={(e) => setMaxRounds(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
-              disabled={running}
-            />
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={!skipPlanReview}
-              onChange={(e) => setSkipPlanReview(!e.target.checked)}
-              disabled={running}
-            />
-            review the plan first
-          </label>
-          <div className="spacer" />
-          <button className="link" onClick={() => void restart()} disabled={running}>
-            new conversation
-          </button>
-          <button className="link" onClick={() => setShowSetup((v) => !v)}>
-            {showSetup ? "hide setup" : "setup"}
-          </button>
-          <button className="link" onClick={() => void build(true)} disabled={running}>
-            demo
-          </button>
         </div>
       </div>
     </>

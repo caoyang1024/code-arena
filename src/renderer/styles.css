@@ -108,6 +108,24 @@ body {
   gap: 7px;
   font-size: 12px;
   color: var(--text-dim);
+  background: none;
+  border: 1px solid transparent;
+  padding: 4px 8px;
+  border-radius: 7px;
+}
+/* Only clickable when there is something to fix; otherwise it is just a label. */
+.status.status-ok {
+  opacity: 1;
+  cursor: default;
+}
+.status.status-actionable {
+  color: var(--major);
+  border-color: rgba(224, 160, 60, 0.35);
+  cursor: pointer;
+}
+.status.status-actionable:hover {
+  border-color: var(--major);
+  color: var(--major);
 }
 .dot {
   width: 7px;
@@ -910,3 +928,23 @@ button.danger:hover:not(:disabled) {
 }
 .decision-note:focus { border-color: #384252; }
 .decision-note::placeholder { color: var(--text-faint); }
+
+.decision-rounds {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.decision-rounds input {
+  width: 44px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 6px;
+  outline: none;
+}
