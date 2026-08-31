@@ -76,6 +76,8 @@ are not redundant — each catches what the other structurally cannot.
 
 **Layer 1 — the OS sandbox.** `sandbox: { enabled: true }` on the Agent SDK. Kernel-enforced,
 not defeatable by clever quoting. Owns *location*: what the builder can reach.
+**Currently off by default because it hangs** — see Status. Turn it on with `sandbox: true`
+once you have verified it works on your setup.
 
 **Layer 2 — the policy** (`policy.ts`). Owns *meaning*: constraints a filesystem sandbox
 cannot express. The load-bearing case is git. `git commit` and `git reset --hard` write only
@@ -150,9 +152,21 @@ calls.
 | `doctor` preflight | verified |
 | Electron app + IPC + transcript UI | verified against the recorded fixture |
 | `builder.ts` Claude drive | **unverified** — blocked on Claude account credit balance |
-| OS sandbox behaviour under real builds | **unverified** — same blocker; disable with `sandbox: false` if it blocks a legitimate toolchain |
+| OS sandbox (`sandbox: true`) | **broken on this setup — off by default.** On claude-agent-sdk 0.1.77 / macOS 25.6, `query()` emits `system:init` at ~0.6s and then never yields again. The identical call without it returns in 3.7s. Worse, the hang swallows account errors, so a failed run is indistinguishable from a slow one. Layer 2 runs either way; location containment currently rests on the policy's lexical path checks. |
 | Full loop end-to-end | **unverified** — same blocker |
 | Electron desktop UI | not started |
+
+## Known sharp edges
+
+**A quota or billing failure arrives as a *successful* result.** `subtype: "success"`, with
+the entire assistant text being `"Credit balance is too low"`. Without a check, the
+orchestrator hands that string to the gatekeeper as if it were a plan. `builder.ts` pattern-
+matches a short, single-turn, tool-free result against known account-failure phrasings and
+throws instead. It is a heuristic; a new phrasing will slip through until it is added.
+
+**A hung SDK looks exactly like a slow model.** There is a watchdog: 150s with no message of
+any kind aborts the turn and says so. Without it, the sandbox hang above burned ten minutes
+of wall-clock looking like normal progress.
 
 ## Next
 

@@ -15,6 +15,35 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Policy } from "./policy.js";
 import type { ArenaConfig, ArenaEvent, Finding } from "./types.js";
 
+/** Tools that write. Denied outright while planning; policed by policy.ts while building. */
+const MUTATING_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+/** Abort a turn that has gone this long without producing a single message. */
+const SILENCE_TIMEOUT_MS = 150_000;
+
+/**
+ * Account-level failures (quota, billing, auth) arrive as an ordinary successful result whose
+ * entire text is the error. They are recognisable by being short, tool-free, single-turn, and
+ * matching one of these phrases -- a real plan is none of those things.
+ */
+const ACCOUNT_FAILURES = [
+  /credit balance is too low/i,
+  /insufficient credits?/i,
+  /quota (has been )?exceeded/i,
+  /rate limit(ed)? exceeded/i,
+  /usage limit reached/i,
+  /invalid api key/i,
+  /authentication[_ ]error/i,
+  /please run .?claude.? to (log ?in|authenticate)/i,
+];
+
+function accountFailure(result: string, turns: number): string | null {
+  const text = result.trim();
+  if (turns > 1 || text.length > 300) return null;
+  const hit = ACCOUNT_FAILURES.find((p) => p.test(text));
+  return hit ? `Builder could not run — the account reported: "${text}"` : null;
+}
+
 export interface BuilderTurn {
   text: string;
   sessionId: string | null;
@@ -71,40 +100,47 @@ async function drive(
   let costUsd = 0;
   let denials = 0;
 
+  const abort = new AbortController();
   const response = query({
     prompt,
     options: {
+      abortController: abort,
       cwd: config.projectDir,
       ...(config.builderModel ? { model: config.builderModel } : {}),
       permissionMode: opts.plan ? "plan" : "default",
       ...(opts.resume ? { resume: opts.resume } : {}),
       ...(config.maxBudgetUsd !== undefined ? { maxBudgetUsd: config.maxBudgetUsd } : {}),
       systemPrompt: { type: "preset", preset: "claude_code" },
-      // Layer 1: kernel-enforced isolation.
+      // Layer 1: kernel-enforced isolation. OFF BY DEFAULT -- it hangs.
       //
-      // Deliberately NOT setting `autoAllowBashIfSandboxed`. It sounds like a convenience,
-      // but auto-approved calls bypass `canUseTool` entirely -- which would silently disable
-      // Layer 2 below, including the git-history rule that rollback depends on. The sandbox
-      // and the policy have to both run, so every bash call must fall through to the prompt
-      // path that invokes our callback.
-      ...(config.sandbox === false ? {} : { sandbox: { enabled: true } }),
+      // Measured on claude-agent-sdk 0.1.77 / macOS 25.6: with `sandbox: { enabled: true }`,
+      // query() emits system:init at ~0.6s and then never yields another message. The same
+      // call without it returns in 3.7s. Worse, the hang swallows account-level errors: a
+      // "Credit balance is too low" result that surfaces in 3.7s unsandboxed simply never
+      // arrives, so the run looks like a slow model instead of a failed one.
+      //
+      // Opt in with `sandbox: true` once that is understood; layer 2 (policy.ts) runs either
+      // way. Note this means location containment currently rests on the policy's path
+      // checks, which are lexical -- see the symlink note in policy.ts.
+      ...(config.sandbox === true ? { sandbox: { enabled: true } } : {}),
       // Layer 2: CodeArena adjudicates every call the permission flow would have prompted
       // a human for. Denials carry a reason so the model adapts instead of retrying.
       canUseTool: async (request) => {
         const name = (request as { tool_name?: string }).tool_name ?? "unknown";
         const input = (request as { input?: unknown }).input ?? {};
 
-        if (opts.plan) {
-          // Belt and braces: plan mode already enforces read-only, but never let a write
-          // through on our side either.
+        // During planning, deny the tools that mutate -- and ONLY those.
+        //
+        // This used to deny everything that reached the callback, on "belt and braces"
+        // reasoning. That was wrong and it deadlocked the phase: plan mode still routes
+        // some reads through the permission prompt, so blanket denial meant the builder
+        // could not open a single file, retried forever, and spent ten minutes producing
+        // nothing. A gate that denies reads to a planner denies it the ability to plan.
+        if (opts.plan && MUTATING_TOOLS.has(name)) {
           denials += 1;
-          emit({
-            type: "builder.permission",
-            name,
-            decision: "deny",
-            reason: "planning phase is read-only",
-          });
-          return { behavior: "deny", message: "Planning phase is read-only." };
+          const reason = `${name} modifies files; the planning phase is read-only.`;
+          emit({ type: "builder.permission", name, decision: "deny", reason });
+          return { behavior: "deny", message: reason };
         }
 
         const decision = policy.check(name, input);
@@ -120,7 +156,26 @@ async function drive(
     },
   });
 
+  // A hung SDK is indistinguishable from a slow model without one of these: the run above
+  // sat silent for ten minutes before anyone noticed it was never going to finish.
+  let lastMessageAt = Date.now();
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastMessageAt > SILENCE_TIMEOUT_MS) {
+      clearInterval(watchdog);
+      emit({
+        type: "log",
+        level: "error",
+        message:
+          `Builder produced nothing for ${SILENCE_TIMEOUT_MS / 1000}s; aborting. ` +
+          `If the OS sandbox is enabled, that is the first thing to suspect.`,
+      });
+      abort.abort();
+    }
+  }, 5_000);
+
+  try {
   for await (const message of response) {
+    lastMessageAt = Date.now();
     if (message.type === "assistant") {
       for (const block of message.message.content) {
         if (block.type === "text") {
@@ -136,6 +191,11 @@ async function drive(
       costUsd = message.total_cost_usd;
       sessionId = message.session_id;
       if (message.subtype === "success") {
+        // A quota or billing failure comes back as subtype "success" with the error as the
+        // whole assistant text -- so the orchestrator would happily hand
+        // "Credit balance is too low" to the gatekeeper as if it were a plan. Catch it here.
+        const failure = accountFailure(message.result, message.num_turns);
+        if (failure) throw new Error(failure);
         text = message.result;
       } else {
         throw new Error(
@@ -143,6 +203,10 @@ async function drive(
         );
       }
     }
+  }
+
+  } finally {
+    clearInterval(watchdog);
   }
 
   return { text, sessionId, costUsd, denials };

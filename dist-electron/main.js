@@ -698,6 +698,7 @@ var Policy = class {
 };
 
 // src/core/builder.ts
+var MUTATING_TOOLS = /* @__PURE__ */ new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 var PLAN_PREAMBLE = `You are the implementer on a two-model team. Another model reviews
 everything you produce before it is accepted, and it can see the repository.
 
@@ -754,15 +755,11 @@ async function drive(prompt, config, emit, opts) {
       canUseTool: async (request) => {
         const name = request.tool_name ?? "unknown";
         const input = request.input ?? {};
-        if (opts.plan) {
+        if (opts.plan && MUTATING_TOOLS.has(name)) {
           denials += 1;
-          emit({
-            type: "builder.permission",
-            name,
-            decision: "deny",
-            reason: "planning phase is read-only"
-          });
-          return { behavior: "deny", message: "Planning phase is read-only." };
+          const reason = `${name} modifies files; the planning phase is read-only.`;
+          emit({ type: "builder.permission", name, decision: "deny", reason });
+          return { behavior: "deny", message: reason };
         }
         const decision = policy.check(name, input);
         if (!decision.allow) {
