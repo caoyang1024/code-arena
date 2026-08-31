@@ -48,6 +48,37 @@ npm run arena -- --project ../my-repo --rounds 3 "add retry with backoff to the 
 
 Flags: `--project DIR`, `--rounds N` (default 3), `--no-plan-review`.
 
+## Two layers of containment
+
+The builder edits your real working tree, so its blast radius is contained twice. The layers
+are not redundant — each catches what the other structurally cannot.
+
+**Layer 1 — the OS sandbox.** `sandbox: { enabled: true }` on the Agent SDK. Kernel-enforced,
+not defeatable by clever quoting. Owns *location*: what the builder can reach.
+
+**Layer 2 — the policy** (`policy.ts`). Owns *meaning*: constraints a filesystem sandbox
+cannot express. The load-bearing case is git. `git commit` and `git reset --hard` write only
+to files inside the project directory, so no sandbox will ever stop them — but CodeArena's
+rollback guarantee rests on git history staying exactly where we left it. A builder that
+commits or resets mid-task silently invalidates the snapshot baseline, and "roll back the
+agent's work" starts destroying yours instead. So git reads are free, git history writes are
+denied, and the denial explains why so the model adapts rather than retrying.
+
+Also denied: writes outside the project or into `.git`, reads of `~/.ssh` / `~/.aws` /
+`~/.codex/auth.json` and friends, `sudo`, keychain access, and publish/release verbs
+(`npm publish`, `gh pr create`, `docker push`) — outward-facing and irreversible, so they stay
+a human decision. Opt out per-task with `allowGitWrites` / `allowPublish`; `sudo` is not
+overridable.
+
+Layer 2 analyses shell strings, and string analysis of shell is not a security control — it
+enumerates commands hidden in pipelines, `;` chains, `$(...)` and backticks precisely because
+prefix-matching is trivially evaded, but Layer 1 is what actually holds. `npm run test:policy`
+covers 66 cases, roughly half of them evasion attempts.
+
+**One non-obvious interaction:** the SDK's `autoAllowBashIfSandboxed` looks like a free
+convenience, but auto-approved calls bypass `canUseTool` — which would silently disable
+Layer 2 entirely, git rule included. It is deliberately left off.
+
 ## Design decisions worth knowing
 
 **The gatekeeper is structurally incapable of writing.** `sandboxMode: "read-only"` is set at
@@ -77,11 +108,13 @@ attributed to — or destroyed by — the builder.
 
 | Component | State |
 |---|---|
+| `policy.ts` + `shell.ts` guardrails | verified — `npm run test:policy` (66 assertions) |
 | `git.ts` snapshot / diff / rollback | verified — `npm run test:git` (13 assertions) |
 | `gatekeeper.ts` Codex review + structured verdict | verified live — `npm run test:gatekeeper <repo>` |
 | `codex-path.ts` signed-binary resolution | verified |
 | `doctor` preflight | verified |
 | `builder.ts` Claude drive | **unverified** — blocked on Claude account credit balance |
+| OS sandbox behaviour under real builds | **unverified** — same blocker; disable with `sandbox: false` if it blocks a legitimate toolchain |
 | Full loop end-to-end | **unverified** — same blocker |
 | Electron desktop UI | not started |
 

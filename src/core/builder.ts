@@ -12,6 +12,7 @@
  * fraction of a cold start -- Claude still remembers what it built and why.
  */
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { Policy } from "./policy.js";
 import type { ArenaConfig, ArenaEvent, Finding } from "./types.js";
 
 export interface BuilderTurn {
@@ -59,6 +60,12 @@ async function drive(
   emit: Emit,
   opts: { plan: boolean; resume?: string | null },
 ): Promise<BuilderTurn> {
+  const policy = new Policy({
+    projectDir: config.projectDir,
+    ...(config.allowGitWrites !== undefined ? { allowGitWrites: config.allowGitWrites } : {}),
+    ...(config.allowPublish !== undefined ? { allowPublish: config.allowPublish } : {}),
+  });
+
   let text = "";
   let sessionId: string | null = opts.resume ?? null;
   let costUsd = 0;
@@ -73,7 +80,16 @@ async function drive(
       ...(opts.resume ? { resume: opts.resume } : {}),
       ...(config.maxBudgetUsd !== undefined ? { maxBudgetUsd: config.maxBudgetUsd } : {}),
       systemPrompt: { type: "preset", preset: "claude_code" },
-      // CodeArena mediates anything the permission flow would otherwise prompt a human for.
+      // Layer 1: kernel-enforced isolation.
+      //
+      // Deliberately NOT setting `autoAllowBashIfSandboxed`. It sounds like a convenience,
+      // but auto-approved calls bypass `canUseTool` entirely -- which would silently disable
+      // Layer 2 below, including the git-history rule that rollback depends on. The sandbox
+      // and the policy have to both run, so every bash call must fall through to the prompt
+      // path that invokes our callback.
+      ...(config.sandbox === false ? {} : { sandbox: { enabled: true } }),
+      // Layer 2: CodeArena adjudicates every call the permission flow would have prompted
+      // a human for. Denials carry a reason so the model adapts instead of retrying.
       canUseTool: async (request) => {
         const name = (request as { tool_name?: string }).tool_name ?? "unknown";
         const input = (request as { input?: unknown }).input ?? {};
@@ -89,6 +105,13 @@ async function drive(
             reason: "planning phase is read-only",
           });
           return { behavior: "deny", message: "Planning phase is read-only." };
+        }
+
+        const decision = policy.check(name, input);
+        if (!decision.allow) {
+          denials += 1;
+          emit({ type: "builder.permission", name, decision: "deny", reason: decision.reason });
+          return { behavior: "deny", message: decision.reason };
         }
 
         emit({ type: "builder.permission", name, decision: "allow" });

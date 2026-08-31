@@ -96,4 +96,14 @@ export interface ArenaConfig {
   codexPath: string;
   /** Skip the plan phase and go straight to implementing. */
   skipPlanReview?: boolean;
+
+  /**
+   * Enable the Claude Agent SDK's OS-level sandbox for the builder. This is the real
+   * security boundary; policy.ts is the semantic guardrail layered on top. Default true.
+   */
+  sandbox?: boolean;
+  /** Let the builder run git history commands. Breaks rollback -- see policy.ts. */
+  allowGitWrites?: boolean;
+  /** Let the builder publish/release. Default false. */
+  allowPublish?: boolean;
 }
