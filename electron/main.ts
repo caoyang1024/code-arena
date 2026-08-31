@@ -13,7 +13,7 @@ import { runChat, runBuild, runSecondOpinion } from "../src/core/orchestrator.js
 import { resolveCodex } from "../src/core/codex-path.js";
 import { resolveClaude } from "../src/core/claude-path.js";
 import { startLogin, type LoginHandle } from "../src/core/claude-login.js";
-import { recents, lastProject, remember, forget } from "./store.js";
+import { recents, lastProject, remember, forget, rememberBuild, lastBuild, forgetBuild } from "./store.js";
 import { Transcript } from "../src/core/transcript.js";
 import { Git } from "../src/core/git.js";
 import { replayFixture } from "../src/core/fixture.js";
@@ -347,9 +347,19 @@ ipcMain.handle(
 
     running = true;
     turn = new AbortController();
+    // Recorded now, not on completion: a build that is stopped, fails, or is interrupted by a
+    // relaunch still leaves files behind, and those are exactly the ones with no other way back.
+    let recorded = false;
+    const recordBaseline = (e: ArenaEvent) => {
+      if (!recorded && e.type === "snapshot" && e.label === "build-start") {
+        recorded = true;
+        void rememberBuild(opts.projectDir, e.ref);
+      }
+      send(e);
+    };
     void runBuild(
       await configFor(opts, codex.path),
-      send,
+      recordBaseline,
       session,
       opts.instruction,
       { signal: turn.signal },
@@ -509,9 +519,38 @@ ipcMain.handle(
       const git = new Git(opts.projectDir);
       if (!(await git.isRepo())) return { ok: false, reason: "Not a git repository." };
       const undo = await git.restore(opts.baseline);
+      await forgetBuild(opts.projectDir);
       return { ok: true, undo };
     } catch (error) {
       return { ok: false, reason: (error as Error).message };
+    }
+  },
+);
+
+/**
+ * Is there a build in this project that could still be undone?
+ *
+ * Answers only when the working tree actually differs from that snapshot, so the option does
+ * not linger after the changes have been committed, discarded, or reverted by hand.
+ */
+ipcMain.handle(
+  "arena:undoable",
+  async (_e, projectDir: string): Promise<{ baseline: string; changed: number } | null> => {
+    if (!projectDir) return null;
+    const baseline = await lastBuild(projectDir);
+    if (!baseline) return null;
+    try {
+      const git = new Git(projectDir);
+      if (!(await git.isRepo())) return null;
+      const now = await git.snapshot("undo-check");
+      const changed = (await git.changedFiles(baseline, now)).length;
+      if (changed === 0) {
+        await forgetBuild(projectDir);
+        return null;
+      }
+      return { baseline, changed };
+    } catch {
+      return null;
     }
   },
 );

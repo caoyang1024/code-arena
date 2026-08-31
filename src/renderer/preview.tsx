@@ -64,6 +64,7 @@ window.arena = {
   loginCancel: async () => {},
   onLoginDone: () => () => {},
   openExternal: async () => {},
+  undoable: async () => ({ baseline: "3c356f70", changed: 2 }),
   revert: async () => ({ ok: true, undo: "ab12cd34ef56" }),
   revealDiff: async () => {},
   onIdle: (cb) => {

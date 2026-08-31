@@ -59,6 +59,10 @@ const api = {
   },
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke("arena:openExternal", url),
 
+  /** The last build's snapshot, if the tree still differs from it. Null when there is nothing to undo. */
+  undoable: (projectDir: string): Promise<{ baseline: string; changed: number } | null> =>
+    ipcRenderer.invoke("arena:undoable", projectDir),
+
   /** Discard the build's changes, returning to the pre-build snapshot. Itself undoable. */
   revert: (opts: { projectDir: string; baseline: string }): Promise<{ ok: boolean; undo?: string; reason?: string }> =>
     ipcRenderer.invoke("arena:revert", opts),

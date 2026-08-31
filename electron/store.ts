@@ -18,8 +18,24 @@ export interface RecentProject {
   openedAt: number;
 }
 
+/**
+ * The last build's pre-build snapshot, per project.
+ *
+ * Discarding a build used to be reachable only from the outcome card in the transcript. That
+ * card dies with the window, and pressing "Keep them" removed it for good -- so a relaunch, a
+ * new conversation, or a change of mind stranded the changes with no way back, while the
+ * snapshot that could undo them still sat in the repository. The ref belongs somewhere that
+ * outlives a render.
+ */
+export interface LastBuild {
+  dir: string;
+  baseline: string;
+  at: number;
+}
+
 interface StoreShape {
   recents: RecentProject[];
+  lastBuilds: LastBuild[];
 }
 
 const MAX_RECENTS = 8;
@@ -33,13 +49,17 @@ async function read(): Promise<StoreShape> {
     const raw = await fs.readFile(file(), "utf8");
     const parsed = JSON.parse(raw) as Partial<StoreShape>;
     const recents = Array.isArray(parsed.recents) ? parsed.recents : [];
+    const lastBuilds = Array.isArray(parsed.lastBuilds) ? parsed.lastBuilds : [];
     return {
       recents: recents.filter(
         (r): r is RecentProject => typeof r?.dir === "string" && typeof r?.openedAt === "number",
       ),
+      lastBuilds: lastBuilds.filter(
+        (b): b is LastBuild => typeof b?.dir === "string" && typeof b?.baseline === "string",
+      ),
     };
   } catch {
-    return { recents: [] };
+    return { recents: [], lastBuilds: [] };
   }
 }
 
@@ -67,7 +87,7 @@ export async function recents(): Promise<string[]> {
   for (const entry of store.recents) {
     if (await stillThere(entry.dir)) alive.push(entry);
   }
-  if (alive.length !== store.recents.length) await write({ recents: alive });
+  if (alive.length !== store.recents.length) await write({ ...store, recents: alive });
   return alive.sort((a, b) => b.openedAt - a.openedAt).map((r) => r.dir);
 }
 
@@ -81,6 +101,7 @@ export async function remember(dir: string): Promise<void> {
   const store = await read();
   const others = store.recents.filter((r) => r.dir !== dir);
   await write({
+    ...store,
     recents: [{ dir, openedAt: Date.now() }, ...others].slice(0, MAX_RECENTS),
   });
 }
@@ -88,5 +109,28 @@ export async function remember(dir: string): Promise<void> {
 /** Drop a project from the list without touching anything on disk. */
 export async function forget(dir: string): Promise<void> {
   const store = await read();
-  await write({ recents: store.recents.filter((r) => r.dir !== dir) });
+  await write({ ...store, recents: store.recents.filter((r) => r.dir !== dir) });
+}
+
+/** Remember the snapshot a build started from, so it can still be undone later. */
+export async function rememberBuild(dir: string, baseline: string): Promise<void> {
+  const store = await read();
+  await write({
+    ...store,
+    lastBuilds: [
+      { dir, baseline, at: Date.now() },
+      ...store.lastBuilds.filter((b) => b.dir !== dir),
+    ].slice(0, MAX_RECENTS),
+  });
+}
+
+/** The snapshot the last build in this project started from, if there was one. */
+export async function lastBuild(dir: string): Promise<string | null> {
+  const store = await read();
+  return store.lastBuilds.find((b) => b.dir === dir)?.baseline ?? null;
+}
+
+export async function forgetBuild(dir: string): Promise<void> {
+  const store = await read();
+  await write({ ...store, lastBuilds: store.lastBuilds.filter((b) => b.dir !== dir) });
 }

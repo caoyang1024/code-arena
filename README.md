@@ -288,6 +288,14 @@ that CodeArena's rollback guarantee depends on the snapshot baseline — was pro
 feature that had never been wired up. "A review that has to pass before the diff is accepted"
 described nothing the code did.
 
+The same undo lives in the project menu as **Discard the last build**, for as long as the
+changes do. The outcome card dies with the window and "Keep them" removed it for good, so a
+relaunch or a change of mind used to strand a build's changes with no way back while the
+snapshot that could undo them still sat in the repository. The baseline is recorded when a
+build *starts*, not when it finishes, because a build that is stopped or crashes leaves files
+behind too — and those are exactly the ones with no other route home. The entry disappears
+once the tree no longer differs from that snapshot.
+
 Discarding is never automatic. Rounds of rejected work are usually partly usable, and throwing
 them away on the model's say-so is not the same as gating.
 

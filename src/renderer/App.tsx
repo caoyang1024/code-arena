@@ -41,6 +41,7 @@ interface ArenaApi {
   loginCancel(): Promise<void>;
   onLoginDone(cb: (result: { ok: boolean; detail: string }) => void): () => void;
   openExternal(url: string): Promise<void>;
+  undoable(projectDir: string): Promise<{ baseline: string; changed: number } | null>;
   revert(opts: {
     projectDir: string;
     baseline: string;
@@ -614,6 +615,8 @@ function Arena() {
   const [showSetup, setShowSetup] = useState(false);
   const [recent, setRecent] = useState<string[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
+  /** A previous build whose changes are still sitting in the tree, if there is one. */
+  const [undoable, setUndoable] = useState<{ baseline: string; changed: number } | null>(null);
 
   // Sign-in. `code` lives here only long enough to be handed to the main process, which
   // forwards it to the official binary; nothing is persisted on either side.
@@ -662,10 +665,13 @@ function Arena() {
   const grow = useCallback(() => {
     const el = composer.current;
     if (!el) return;
-    // Take the ceiling from the stylesheet rather than repeating it here. A hard-coded 150
-    // silently overrode the CSS max-height and capped the field at a third of what it was
-    // meant to reach.
-    const max = parseFloat(getComputedStyle(el).maxHeight) || Infinity;
+    // The ceiling comes from the stylesheet so it is not written twice -- but a value that
+    // fails to resolve must mean "no ceiling", never "a ceiling of zero". A viewport-relative
+    // max-height computes to 0 where there is no viewport, and Math.min(scrollHeight, 0) then
+    // pinned the field at its min-height: it stopped growing, and stopped shrinking back when
+    // emptied, which reads as the delete key not working.
+    const declared = parseFloat(getComputedStyle(el).maxHeight);
+    const max = Number.isFinite(declared) && declared > 0 ? declared : Infinity;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, max)}px`;
   }, []);
@@ -684,7 +690,10 @@ function Arena() {
       if (event.type === "user.message") setHasContext(true);
       if (event.type === "done") setPhase(event.result.phase);
     });
-    const offIdle = window.arena.onIdle(() => setRunning(false));
+    const offIdle = window.arena.onIdle(() => {
+      setRunning(false);
+      void window.arena.undoable(projectDirRef.current).then(setUndoable);
+    });
     // The sign-in usually completes in the browser without a pasted code; close the flow
     // when it does rather than leaving the user staring at a code box.
     const offLogin = window.arena.onLoginDone((result) => {
@@ -718,6 +727,16 @@ function Arena() {
   const refreshDoctor = useCallback(async (dir: string) => {
     setDoctor(await window.arena.doctor(dir));
   }, []);
+
+  // Checked whenever the project changes and after every turn, so the option appears while
+  // there is something to undo and disappears once there is not.
+  const refreshUndoable = useCallback(async (dir: string) => {
+    setUndoable(dir ? await window.arena.undoable(dir) : null);
+  }, []);
+
+  useEffect(() => {
+    void refreshUndoable(projectDir);
+  }, [projectDir, refreshUndoable]);
 
   useEffect(() => {
     void refreshDoctor(projectDir);
@@ -879,6 +898,24 @@ function Arena() {
     if (!res.started) fail(res.reason ?? "Could not start.");
   }, [running, projectDir, turnOptions, fail]);
 
+  /** Undo a build from outside the transcript, for when its outcome card is long gone. */
+  const discardLastBuild = useCallback(async () => {
+    if (!undoable || running) return;
+    const res = await window.arena.revert({ projectDir, baseline: undoable.baseline });
+    setBlocks((prev) => [
+      ...prev,
+      {
+        kind: "note",
+        id: nextId++,
+        level: res.ok ? "warn" : "error",
+        message: res.ok
+          ? `Discarded the last build's changes.${res.undo ? ` Still recoverable: git checkout ${res.undo.slice(0, 8)} -- .` : ""}`
+          : (res.reason ?? "Could not discard."),
+      },
+    ]);
+    void refreshUndoable(projectDir);
+  }, [undoable, running, projectDir, refreshUndoable]);
+
   const restart = useCallback(async () => {
     if (running) return;
     await window.arena.reset();
@@ -968,6 +1005,23 @@ function Arena() {
                   <span className="menu-name">New conversation</span>
                   <span className="menu-path">forget what we discussed</span>
                 </div>
+                {/*
+                  The transcript's outcome card dies with the window, and "Keep them" removed
+                  it for good, so a relaunch or a change of mind stranded a build's changes
+                  with no way back. This entry lives as long as the changes do.
+                */}
+                {undoable && (
+                  <div
+                    className="menu-item danger-item"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void discardLastBuild();
+                    }}
+                  >
+                    <span className="menu-name">Discard the last build</span>
+                    <span className="menu-path">{undoable.changed} files · undoable</span>
+                  </div>
+                )}
               </div>
             </>
           )}

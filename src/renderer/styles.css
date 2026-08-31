@@ -961,3 +961,7 @@ button.danger:hover:not(:disabled) {
   border-color: var(--gatekeeper);
   color: var(--gatekeeper);
 }
+
+.menu-item.danger-item .menu-name {
+  color: var(--blocker);
+}
