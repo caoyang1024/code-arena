@@ -34,6 +34,7 @@ Both SDKs authenticate off existing subscription logins; no API keys required.
 
 ```bash
 npm install
+npx install-electron
 npm run doctor
 ```
 
@@ -42,11 +43,31 @@ codex binary and its ChatGPT login, and that the target directory is a git repo.
 
 ## Use
 
+Desktop app:
+
+```bash
+npm run app
+```
+
+Or headless, same orchestrator:
+
 ```bash
 npm run arena -- --project ../my-repo --rounds 3 "add retry with backoff to the http client"
 ```
 
 Flags: `--project DIR`, `--rounds N` (default 3), `--no-plan-review`.
+
+### Seeing it without an account
+
+`npm run app` and click **Watch a recorded run** — a real recorded transcript replays through
+the live UI. To iterate on the UI itself without launching Electron at all:
+
+```bash
+npx vite
+```
+
+then open `/preview.html`. The renderer touches Node only through `window.arena`, so stubbing
+that one object runs the entire interface in an ordinary browser tab.
 
 ## Two layers of containment
 
@@ -104,6 +125,20 @@ attributed to — or destroyed by — the builder.
 **Round caps are the safety mechanism.** Two models that disagree will ping-pong forever.
 `maxRounds` turns that into an escalation instead of a runaway bill.
 
+## Layout
+
+| Path | What lives there |
+|---|---|
+| `src/core/` | orchestrator, both agent drivers, git, policy — no UI, no Electron |
+| `electron/` | main process (hosts the orchestrator) and the preload bridge |
+| `src/renderer/` | React app: a pure fold over `ArenaEvent` |
+| `src/cli/` | terminal front-end and `doctor`, same event stream |
+| `test/` | offline suites (`policy`, `git`) and one live suite (`gatekeeper`) |
+
+The renderer cannot reach the filesystem, spawn a process, or touch either SDK:
+`contextIsolation` is on, `nodeIntegration` is off, and the preload exposes exactly five
+calls.
+
 ## Status
 
 | Component | State |
@@ -113,6 +148,7 @@ attributed to — or destroyed by — the builder.
 | `gatekeeper.ts` Codex review + structured verdict | verified live — `npm run test:gatekeeper <repo>` |
 | `codex-path.ts` signed-binary resolution | verified |
 | `doctor` preflight | verified |
+| Electron app + IPC + transcript UI | verified against the recorded fixture |
 | `builder.ts` Claude drive | **unverified** — blocked on Claude account credit balance |
 | OS sandbox behaviour under real builds | **unverified** — same blocker; disable with `sandbox: false` if it blocks a legitimate toolchain |
 | Full loop end-to-end | **unverified** — same blocker |
