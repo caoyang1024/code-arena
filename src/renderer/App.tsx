@@ -179,38 +179,6 @@ function shortenPath(p: string): string {
 // -----------------------------------------------------------------------------------------
 // phase rail
 
-const RAIL: Array<{ phase: Phase; label: string; side: "builder" | "gate" }> = [
-  { phase: "chatting", label: "Talking", side: "builder" },
-  { phase: "planning", label: "Plan", side: "builder" },
-  { phase: "plan_review", label: "Plan review", side: "gate" },
-  { phase: "implementing", label: "Implement", side: "builder" },
-  { phase: "diff_review", label: "Diff review", side: "gate" },
-];
-
-function PhaseRail({ current, round }: { current: Phase | null; round: number }) {
-  const index = RAIL.findIndex((s) => s.phase === current);
-  const settled = current === "approved" || current === "escalated" || current === "failed";
-
-  return (
-    <div className="rail">
-      {RAIL.map((step, i) => {
-        const active = i === index && !settled;
-        const done = settled || (index >= 0 && i < index);
-        return (
-          <div key={step.phase} style={{ display: "contents" }}>
-            {i > 0 && <div className={`connector${done || active ? " done" : ""}`} />}
-            <div className={`step ${step.side}${active ? " active" : ""}${done ? " done" : ""}`}>
-              <div className="pip" />
-              {step.label}
-              {active && round > 1 && <span className="round-badge">×{round}</span>}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 // -----------------------------------------------------------------------------------------
 // blocks
 
@@ -629,7 +597,6 @@ function Arena() {
 
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [phase, setPhase] = useState<Phase | null>(null);
-  const [round, setRound] = useState(1);
   const [running, setRunning] = useState(false);
 
   const [draft, setDraft] = useState("");
@@ -679,10 +646,7 @@ function Arena() {
   useEffect(() => {
     const offEvent = window.arena.onEvent((event) => {
       setBlocks((prev) => reduce(prev, event));
-      if (event.type === "phase") {
-        setPhase(event.phase);
-        setRound(event.round);
-      }
+      if (event.type === "phase") setPhase(event.phase);
       if (event.type === "user.message") setHasContext(true);
       if (event.type === "done") setPhase(event.result.phase);
     });
@@ -981,8 +945,6 @@ function Arena() {
           {statusText}
         </button>
       </div>
-
-      <PhaseRail current={phase} round={round} />
 
       <div className="transcript" ref={scroller} onScroll={onScroll}>
         {blocks.length === 0 ? (
