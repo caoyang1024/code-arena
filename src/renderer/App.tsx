@@ -1139,11 +1139,8 @@ function Arena() {
               Stop
             </button>
           ) : (
-            <button
-              className="primary"
-              onClick={() => void send()}
-              disabled={!draft.trim() || !projectDir}
-            >
+            /* Not `primary`: Build is the primary action, and it lives in the transcript. */
+            <button onClick={() => void send()} disabled={!draft.trim() || !projectDir}>
               Send
             </button>
           )}
