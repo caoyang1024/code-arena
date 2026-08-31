@@ -17,6 +17,11 @@ export type Started = { started: boolean; reason?: string };
 const api = {
   doctor: (projectDir: string) => ipcRenderer.invoke("arena:doctor", projectDir),
   pickProject: (): Promise<string | null> => ipcRenderer.invoke("arena:pickProject"),
+  recentProjects: (): Promise<string[]> => ipcRenderer.invoke("arena:recentProjects"),
+  lastProject: (): Promise<string | null> => ipcRenderer.invoke("arena:lastProject"),
+  rememberProject: (dir: string): Promise<void> => ipcRenderer.invoke("arena:rememberProject", dir),
+  forgetProject: (dir: string): Promise<void> => ipcRenderer.invoke("arena:forgetProject", dir),
+  newProject: (): Promise<{ dir?: string; reason?: string }> => ipcRenderer.invoke("arena:newProject"),
 
   /** An ordinary conversational turn. Read-only; the gatekeeper is not involved. */
   chat: (opts: TurnOptions & { message: string }): Promise<Started> =>

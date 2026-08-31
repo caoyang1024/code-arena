@@ -13,10 +13,12 @@ import { runChat, runBuild } from "../src/core/orchestrator.js";
 import { resolveCodex } from "../src/core/codex-path.js";
 import { resolveClaude } from "../src/core/claude-path.js";
 import { startLogin, type LoginHandle } from "../src/core/claude-login.js";
+import { recents, lastProject, remember, forget } from "./store.js";
 import { Git } from "../src/core/git.js";
 import { replayFixture } from "../src/core/fixture.js";
 import type { ArenaConfig, ArenaEvent } from "../src/core/types.js";
 import { execFile } from "node:child_process";
+import fsp from "node:fs/promises";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -146,8 +148,61 @@ ipcMain.handle("arena:pickProject", async (): Promise<string | null> => {
     properties: ["openDirectory"],
     message: "Choose the repository the agents will work in",
   });
-  return result.canceled ? null : (result.filePaths[0] ?? null);
+  const dir = result.canceled ? null : (result.filePaths[0] ?? null);
+  if (dir) await remember(dir);
+  return dir;
 });
+
+/** Projects opened before, newest first. Ones that have since moved are dropped. */
+ipcMain.handle("arena:recentProjects", async (): Promise<string[]> => recents());
+
+/** The project to reopen on launch. Re-picking it every time was pure friction. */
+ipcMain.handle("arena:lastProject", async (): Promise<string | null> => lastProject());
+
+ipcMain.handle("arena:rememberProject", async (_e, dir: string) => remember(dir));
+ipcMain.handle("arena:forgetProject", async (_e, dir: string) => forget(dir));
+
+/**
+ * Create a new project and initialise it as a repository.
+ *
+ * CodeArena needs a git repo to snapshot against, so a directory that is not one is not a
+ * project it can work in -- making the user go elsewhere to run `git init` first is a strange
+ * thing to demand of a desktop app. No initial commit is made: an authored commit in someone
+ * else's repository is theirs to write, and snapshots handle a repo with no commits.
+ */
+ipcMain.handle(
+  "arena:newProject",
+  async (): Promise<{ dir?: string; reason?: string }> => {
+    if (!win) return { reason: "No window." };
+    const result = await dialog.showSaveDialog(win, {
+      title: "New project",
+      message: "Where should the project live?",
+      nameFieldLabel: "Project name:",
+      buttonLabel: "Create",
+      properties: ["createDirectory"],
+    });
+    if (result.canceled || !result.filePath) return {};
+
+    const dir = result.filePath;
+    try {
+      const existing = await fsp.readdir(dir).catch(() => null);
+      if (existing && existing.length > 0) {
+        return { reason: `${path.basename(dir)} already exists and is not empty.` };
+      }
+      await fsp.mkdir(dir, { recursive: true });
+      await exec("git", ["init", "-q"], { cwd: dir });
+      await fsp.writeFile(
+        path.join(dir, "README.md"),
+        `# ${path.basename(dir)}\n\nDescribe what this is, and what conventions the code should follow.\nThe reviewer reads this file.\n`,
+        "utf8",
+      );
+      await remember(dir);
+      return { dir };
+    } catch (error) {
+      return { reason: (error as Error).message };
+    }
+  },
+);
 
 interface TurnOptions {
   projectDir: string;

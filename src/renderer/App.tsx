@@ -24,6 +24,11 @@ interface TurnOptions {
 interface ArenaApi {
   doctor(projectDir: string): Promise<DoctorReport>;
   pickProject(): Promise<string | null>;
+  recentProjects(): Promise<string[]>;
+  lastProject(): Promise<string | null>;
+  rememberProject(dir: string): Promise<void>;
+  forgetProject(dir: string): Promise<void>;
+  newProject(): Promise<{ dir?: string; reason?: string }>;
   chat(opts: TurnOptions & { message: string }): Promise<{ started: boolean; reason?: string }>;
   build(
     opts: TurnOptions & { instruction?: string; demo?: boolean },
@@ -425,6 +430,8 @@ function Arena() {
   const [projectDir, setProjectDir] = useState("");
   const [doctor, setDoctor] = useState<DoctorReport | null>(null);
   const [showSetup, setShowSetup] = useState(false);
+  const [recent, setRecent] = useState<string[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // Sign-in. `code` lives here only long enough to be handed to the main process, which
   // forwards it to the official binary; nothing is persisted on either side.
@@ -508,15 +515,53 @@ function Arena() {
     void refreshDoctor(projectDir);
   }, [projectDir, refreshDoctor]);
 
+  // Reopen where you left off. Re-picking the project on every launch was pure friction.
+  useEffect(() => {
+    void (async () => {
+      const [last, list] = await Promise.all([
+        window.arena.lastProject(),
+        window.arena.recentProjects(),
+      ]);
+      setRecent(list);
+      if (last) setProjectDir(last);
+    })();
+  }, []);
+
+  /** Switch projects. The conversation was about other code, so it does not come along. */
+  const openProject = useCallback(async (dir: string) => {
+    setProjectDir(dir);
+    setBlocks([]);
+    setHasContext(false);
+    setPhase(null);
+    setMenuOpen(false);
+    await window.arena.rememberProject(dir);
+    setRecent(await window.arena.recentProjects());
+  }, []);
+
   const pick = useCallback(async () => {
     const dir = await window.arena.pickProject();
-    if (dir) {
-      setProjectDir(dir);
-      // The conversation was about other code; the main process drops it too.
-      setBlocks([]);
-      setHasContext(false);
-      setPhase(null);
+    if (dir) await openProject(dir);
+    else setMenuOpen(false);
+  }, [openProject]);
+
+  const createProject = useCallback(async () => {
+    const res = await window.arena.newProject();
+    if (res.dir) {
+      await openProject(res.dir);
+    } else {
+      setMenuOpen(false);
+      if (res.reason) {
+        setBlocks((prev) => [
+          ...prev,
+          { kind: "note", id: nextId++, level: "error", message: res.reason! },
+        ]);
+      }
     }
+  }, [openProject]);
+
+  const dropRecent = useCallback(async (dir: string) => {
+    await window.arena.forgetProject(dir);
+    setRecent(await window.arena.recentProjects());
   }, []);
 
   const turnOptions = useMemo(
@@ -637,9 +682,59 @@ function Arena() {
         <div className="wordmark">
           Code<span>A</span>ren<em>a</em>
         </div>
-        <div className="project" onClick={pick} title={projectDir || "Choose a project"}>
-          {projectDir ? shortenPath(projectDir.replace(/^\/Users\/[^/]+/, "~")) : "Choose project…"}
-          {doctor?.project.branch && <span className="branch">{doctor.project.branch}</span>}
+        <div className="project-picker">
+          <div
+            className="project"
+            onClick={() => setMenuOpen((v) => !v)}
+            title={projectDir || "Choose a project"}
+          >
+            {projectDir ? shortenPath(projectDir.replace(/^\/Users\/[^/]+/, "~")) : "Choose project…"}
+            {doctor?.project.branch && <span className="branch">{doctor.project.branch}</span>}
+            <span className="caret">▾</span>
+          </div>
+
+          {menuOpen && (
+            <>
+              <div className="menu-scrim" onClick={() => setMenuOpen(false)} />
+              <div className="menu">
+                {recent.length > 0 && (
+                  <>
+                    <div className="menu-label">Recent</div>
+                    {recent.map((dir) => (
+                      <div
+                        key={dir}
+                        className={`menu-item${dir === projectDir ? " current" : ""}`}
+                        onClick={() => void openProject(dir)}
+                      >
+                        <span className="menu-name">{dir.split("/").pop()}</span>
+                        <span className="menu-path">
+                          {shortenPath(dir.replace(/^\/Users\/[^/]+/, "~"))}
+                        </span>
+                        <button
+                          className="menu-drop"
+                          title="Remove from this list (the folder is not touched)"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void dropRecent(dir);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    <div className="menu-sep" />
+                  </>
+                )}
+                <div className="menu-item" onClick={() => void pick()}>
+                  <span className="menu-name">Open a project…</span>
+                </div>
+                <div className="menu-item" onClick={() => void createProject()}>
+                  <span className="menu-name">New project…</span>
+                  <span className="menu-path">creates the folder and runs git init</span>
+                </div>
+              </div>
+            </>
+          )}
         </div>
         <div className="spacer" />
         <div className="status">

@@ -80,7 +80,13 @@ Desktop app:
 npm run app
 ```
 
-Choose a project, then talk. Press **Build this** when you have decided.
+It reopens the project you were last in. The title-bar chip lists recent projects, opens
+another, or creates a new one — **New project…** makes the folder and runs `git init`, since
+CodeArena needs a repository to snapshot against and sending you elsewhere to run one command
+first is a strange thing for a desktop app to demand. No initial commit is made; that one is
+yours to author.
+
+Then talk. Press **Build this** when you have decided.
 
 Or headless, same orchestrator:
 

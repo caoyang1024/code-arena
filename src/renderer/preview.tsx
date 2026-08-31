@@ -24,6 +24,11 @@ window.arena = {
     project: { ok: true, detail: "main", branch: "main", dirty: false },
   }),
   pickProject: async () => "/Users/preview/work/calc",
+  recentProjects: async () => ["/Users/preview/work/calc", "/Users/preview/work/api-gateway"],
+  lastProject: async () => "/Users/preview/work/calc",
+  rememberProject: async () => {},
+  forgetProject: async () => {},
+  newProject: async () => ({ dir: "/Users/preview/work/new-thing" }),
   chat: async ({ message }: { message: string }) => {
     emit({ type: "user.message", text: message });
     emit({ type: "phase", phase: "chatting", round: 1 });
