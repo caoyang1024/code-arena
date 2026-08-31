@@ -183,6 +183,17 @@ captures state into dangling commits via an alternate index, so your branches, H
 history are untouched. Pre-existing uncommitted work is part of the baseline and is never
 attributed to — or destroyed by — the builder.
 
+Everything runs at the repository **top level**, not at the directory you picked. Choosing a
+subdirectory is one click in the folder picker, and staging with `add -A .` from one stages
+only that subtree — so a change elsewhere in the repo vanishes from the diff and the gatekeeper
+reviews an incomplete change believing it saw everything. Quieter, and worse, than the crash it
+was hiding behind. The scratch index lives in the temp directory for the same family of
+reasons: `<dir>/.git/` does not exist in a subdirectory, and in a worktree or submodule `.git`
+is a file.
+
+Snapshot refs are pruned when a build finishes, keeping the latest baseline so a rollback stays
+possible. Each ref pins an entire working tree, and nothing used to prune them.
+
 **Round caps are the safety mechanism.** Two models that disagree will ping-pong forever.
 `maxRounds` turns that into an escalation instead of a runaway bill.
 

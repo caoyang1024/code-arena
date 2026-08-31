@@ -49,3 +49,89 @@ await git.cleanupRefs();
 assert(sh("git for-each-ref refs/codearena/").trim() === "", "cleanupRefs removes all arena refs");
 
 fs.rmSync(dir, { recursive: true, force: true });
+
+// ---------------------------------------------------------------------------------------
+// Regressions found by pointing CodeArena at its own source.
+
+console.log("\nsubdirectories and worktrees");
+{
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "arena-sub-"));
+  const run = (c: string, cwd = repo) => execFileSync("bash", ["-c", c], { cwd }).toString();
+  run("git init -q && git config user.email t@t && git config user.name T");
+  fs.mkdirSync(path.join(repo, "pkg/app"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "root.txt"), "root\n");
+  fs.writeFileSync(path.join(repo, "pkg/app/a.txt"), "app\n");
+  run("git add -A && git commit -qm init");
+
+  // The Electron folder picker makes choosing a subdirectory one click.
+  const sub = new Git(path.join(repo, "pkg/app"));
+  assert(await sub.isRepo(), "a subdirectory is recognised as a repo");
+
+  const base = await sub.snapshot("from-subdir");
+  assert(/^[0-9a-f]{40}$/.test(base), "snapshot works from a subdirectory (used to ENOENT)");
+
+  fs.writeFileSync(path.join(repo, "root.txt"), "root changed\n");
+  fs.writeFileSync(path.join(repo, "pkg/app/a.txt"), "app changed\n");
+  const after = await sub.snapshot("after");
+  const files = await sub.changedFiles(base, after);
+
+  assert(files.includes("pkg/app/a.txt"), "sees changes in the chosen subdirectory");
+  assert(files.includes("root.txt"), "sees changes ELSEWHERE in the repo, not just the subtree");
+
+  await sub.cleanupRefs();
+  fs.rmSync(repo, { recursive: true, force: true });
+}
+
+console.log("\nrestore leaves the user's index alone");
+{
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "arena-idx-"));
+  const run = (c: string) => execFileSync("bash", ["-c", c], { cwd: repo }).toString();
+  run("git init -q && git config user.email t@t && git config user.name T");
+  fs.writeFileSync(path.join(repo, "a.txt"), "one\n");
+  run("git add -A && git commit -qm init");
+
+  const g = new Git(repo);
+  fs.writeFileSync(path.join(repo, "user_unstaged.txt"), "the user's own work\n");
+  const base = await g.snapshot("base");
+
+  fs.writeFileSync(path.join(repo, "a.txt"), "changed by builder\n");
+  fs.writeFileSync(path.join(repo, "new.txt"), "created by builder\n");
+
+  await g.restore(base);
+
+  const status = run("git status --porcelain");
+  assert(status.includes("?? user_unstaged.txt"), "the user's untracked file is still UNTRACKED after restore");
+  assert(!/^A /m.test(status), "restore staged nothing (it used to stage everything it touched)");
+  assert(fs.readFileSync(path.join(repo, "a.txt"), "utf8") === "one\n", "restore reverted the builder's edit");
+  assert(!fs.existsSync(path.join(repo, "new.txt")), "restore removed the builder's new file");
+
+  await g.cleanupRefs();
+  fs.rmSync(repo, { recursive: true, force: true });
+}
+
+console.log("\nrefs do not accumulate");
+{
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "arena-refs-"));
+  const run = (c: string) => execFileSync("bash", ["-c", c], { cwd: repo }).toString();
+  run("git init -q && git config user.email t@t && git config user.name T");
+  fs.writeFileSync(path.join(repo, "a.txt"), "one\n");
+  run("git add -A && git commit -qm init");
+
+  const g = new Git(repo);
+  const first = await g.snapshot("build-1-baseline");
+  fs.writeFileSync(path.join(repo, "a.txt"), "two\n");
+  await g.snapshot("build-1-round-1");
+  fs.writeFileSync(path.join(repo, "a.txt"), "three\n");
+  const latest = await g.snapshot("build-2-baseline");
+
+  assert((await g.listRefs()).length === 3, "three snapshots left three refs");
+  await g.pruneRefs([latest]);
+  const kept = await g.listRefs();
+  assert(kept.length === 1, "pruning leaves exactly one ref");
+  assert(kept[0]!.endsWith(latest), "the ref kept is the one asked for");
+  assert(first !== latest, "sanity: the pruned refs were different commits");
+
+  await g.cleanupRefs();
+  assert((await g.listRefs()).length === 0, "cleanupRefs removes the rest");
+  fs.rmSync(repo, { recursive: true, force: true });
+}

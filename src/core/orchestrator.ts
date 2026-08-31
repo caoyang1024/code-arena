@@ -109,6 +109,10 @@ export async function runBuild(
       ...(error ? { error } : {}),
     };
     if (phase === "cancelled") emit({ type: "cancelled", phase: "cancelled" });
+    // Keep this build's baseline so a rollback stays possible; drop everything older. Every
+    // snapshot pins a whole working tree, and nothing was ever pruned, so they piled up in
+    // the user's repository one per round per build, forever.
+    void git.pruneRefs(baselineRef ? [baselineRef] : []).catch(() => {});
     emit({ type: "cost", cost: result.cost });
     emit({ type: "session", sessionId: session });
     emit({ type: "done", result });
