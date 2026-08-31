@@ -538,7 +538,13 @@ function BuildDecision({
       <button className="decision-go" onClick={onBuild}>
         Build this
       </button>
-      <span className="decision-price">≈ $2 · up to {rounds} rounds</span>
+      {/*
+        Not a dollar figure. total_cost_usd is what the work would have cost at API rates,
+        which is not what a subscription user pays, and the gatekeeper reports no cost at all
+        -- its ~100k tokens per build were simply missing from the number. A price that shows
+        a charge which will not happen, for half the work, is worse than no price.
+      */}
+      <span className="decision-price">a full build · up to {rounds} rounds each way</span>
       <div className="spacer" />
       <button className="link" onClick={() => setOpen((v) => !v)}>
         {open ? "− focus" : "+ focus"}

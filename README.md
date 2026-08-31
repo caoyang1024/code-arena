@@ -234,6 +234,24 @@ described nothing the code did.
 Discarding is never automatic. Rounds of rejected work are usually partly usable, and throwing
 them away on the model's say-so is not the same as gating.
 
+**The planning phase is read-only, and getting there took two attempts.** The SDK's plan mode
+looks like the right tool and its enforcement is real, but it ships with its own exit:
+`ExitPlanMode` is auto-approved by the mode, and `permissionMode` auto-approvals never reach
+`canUseTool` — so the callback cannot refuse it. Once it lands the mode is gone and every
+later write is auto-approved too, silently, with no denial recorded. Observed twice on real
+runs: a phase labelled "PLANNING (read-only)" performed Writes and Edits, and the "plan" the
+reviewer received was a report of finished work, written in the past tense.
+
+Denying `ExitPlanMode` in `canUseTool` did not help, for exactly the reason it could not have.
+The fix was to stop using plan mode: in `default` mode there is no mode to escape and writes
+fall through to `canUseTool`, the path `policy.ts` covers with 109 assertions. Planning and
+chatting now differ only in the prompt, which is the only thing that should ever have differed.
+
+Measured on the same task before and after: three writes and two files changed during
+planning, versus none — and the builder's cost fell from $2.09 to $0.48, the difference being
+implementation work it was doing under the label of planning and which was discarded at
+escalation.
+
 **Round caps are the safety mechanism.** Two models that disagree will ping-pong forever.
 `maxRounds` turns that into an escalation instead of a runaway bill.
 

@@ -32,6 +32,23 @@ type Emit = (event: ArenaEvent) => void;
 const MUTATING_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 /**
+ * Leaving plan mode is itself the dangerous act.
+ *
+ * ExitPlanMode used to fall through to the policy's `default: ALLOW`. Allowing it ends plan
+ * mode, and everything the SDK auto-approves afterwards never reaches canUseTool at all --
+ * so the write denials below simply stopped firing. Observed on a real run: during a phase
+ * the UI labelled "PLANNING (read-only)" the builder made two Writes and an Edit, with zero
+ * denials recorded, and the "plan" handed to the gatekeeper was a report of work already
+ * done. The reviewer's own language gave it away; it wrote about the change in the past
+ * tense.
+ *
+ * This is the same shape as the autoAllowBashIfSandboxed trap: an auto-approved call is one
+ * this process never sees. The only reliable defence is to refuse the thing that flips the
+ * mode, not the things that become possible afterwards.
+ */
+const PHASE_ESCAPES = new Set(["ExitPlanMode", "exit_plan_mode"]);
+
+/**
  * Abort a turn that has produced nothing at all for this long.
  *
  * Deliberately generous. Messages arrive between tool calls, not during them, so this timer
@@ -85,6 +102,10 @@ Do not produce an implementation plan unless asked. The engineer decides when to
 
 const PLAN_PREAMBLE = `The engineer has decided to build what you just discussed. Write the
 implementation plan now.
+
+You cannot modify anything in this phase, by design. Write the plan out as your answer and
+stop -- do not try to leave planning or begin the work. Implementation starts only after the
+reviewer approves, and you will be asked for it explicitly.
 
 A second model reviews this plan before you touch a single file, and it can read the
 repository. Be specific about which files you will create or modify and what each change
@@ -153,8 +174,27 @@ async function drive(
       // place instead of two.
       ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
       ...(config.builderModel ? { model: config.builderModel } : {}),
-      permissionMode: opts.mode === "plan" ? "plan" : "default",
+      // Always "default" -- never the SDK's plan mode.
+      //
+      // Plan mode looks like the right tool for a read-only planning phase, and its read-only
+      // enforcement is real, but it ships with its own exit: ExitPlanMode. That call is
+      // auto-approved by the mode, and permissionMode auto-approvals never reach canUseTool,
+      // so the callback below cannot refuse it. Once it lands, the mode is gone and every
+      // subsequent write is auto-approved too -- invisibly, with no denial recorded.
+      //
+      // Twice observed on real runs: a phase the UI labelled "PLANNING (read-only)" made
+      // Writes and Edits, and the "plan" handed to the reviewer was a report of work already
+      // finished. Denying ExitPlanMode in canUseTool did not help, for the same reason it
+      // could not have.
+      //
+      // In default mode there is no mode to escape and writes fall through to canUseTool,
+      // which is the path policy.ts covers with 109 assertions. Planning and chatting now
+      // differ only in the prompt, which is the only thing that should have differed.
+      permissionMode: "default",
       ...(opts.resume ? { resume: opts.resume } : {}),
+      // Nothing should be reaching for it now, but leaving it available invites the model to
+      // announce a mode change that is not happening.
+      ...(readOnly ? { disallowedTools: ["ExitPlanMode"] } : {}),
       ...(config.maxBudgetUsd !== undefined ? { maxBudgetUsd: config.maxBudgetUsd } : {}),
       systemPrompt:
         opts.mode === "chat"
@@ -189,6 +229,17 @@ async function drive(
         // deadlocked the phase: the builder could not open a single file, retried, and spun
         // for ten minutes producing nothing. A gate that denies reads to a planner denies it
         // the ability to plan.
+        if (readOnly && PHASE_ESCAPES.has(name)) {
+          denials += 1;
+          const reason =
+            opts.mode === "plan"
+              ? "Stay in plan mode. Write the plan out as your answer and stop; CodeArena " +
+                "moves to implementation only after the reviewer approves it."
+              : "We are still talking. Nothing is written until the engineer decides to build.";
+          emit({ type: "builder.permission", name, decision: "deny", reason });
+          return { behavior: "deny", message: reason };
+        }
+
         if (readOnly && MUTATING_TOOLS.has(name)) {
           denials += 1;
           const reason =
