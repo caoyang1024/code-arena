@@ -160,6 +160,18 @@ export function renderFindings(findings: Finding[]): string {
 
 // -----------------------------------------------------------------------------------------
 
+/**
+ * How work proceeds here, in the project's own words.
+ *
+ * The stages are code and stay code -- a project cannot invent a phase. What it can change is
+ * what each model is told at each one, and that is most of what "the working method" actually
+ * is. Appended rather than substituted: a project narrows the method, it does not replace the
+ * sequencing the pipeline depends on.
+ */
+function methodSuffix(method?: string): string {
+  return method?.trim() ? `\n\n--- HOW WORK PROCEEDS HERE ---\n${method.trim()}` : "";
+}
+
 async function drive(
   prompt: string,
   config: ArenaConfig,
@@ -219,10 +231,12 @@ async function drive(
       // announce a mode change that is not happening.
       ...(readOnly ? { disallowedTools: ["ExitPlanMode"] } : {}),
       ...(config.maxBudgetUsd !== undefined ? { maxBudgetUsd: config.maxBudgetUsd } : {}),
-      systemPrompt:
-        opts.mode === "chat"
-          ? { type: "preset", preset: "claude_code", append: CHAT_SYSTEM }
-          : { type: "preset", preset: "claude_code" },
+      systemPrompt: {
+        type: "preset",
+        preset: "claude_code",
+        append:
+          (opts.mode === "chat" ? CHAT_SYSTEM : "") + methodSuffix(config.workingMethod),
+      },
 
       // Layer 1: kernel-enforced isolation. ON by default.
       //

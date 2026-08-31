@@ -115,6 +115,11 @@ export interface ArenaConfig {
   codexPath: string;
   /** Absolute path to the user's Claude Code binary. Omit to use the SDK's bundled copy. */
   claudePath?: string;
+  /**
+   * The project's "## Working method" section, if it states one. Appended to what both models
+   * are told; it narrows the method rather than replacing the pipeline's sequencing.
+   */
+  workingMethod?: string;
   /** Skip the plan review and go straight to implementing after planning. */
   skipPlanReview?: boolean;
 

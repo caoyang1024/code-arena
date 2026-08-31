@@ -129,7 +129,19 @@ export async function runBuild(
   conversation?: string,
 ): Promise<BuildOutcome> {
   const git = new Git(config.projectDir);
-  const gate = new Gatekeeper(config, control);
+
+  // Read the project's rules before anything is constructed from the config: the reviewer is
+  // built from it, and a gatekeeper created before the working method is known would spend the
+  // whole build without it.
+  const root = (await git.root()) ?? config.projectDir;
+  const rootConventions = await conventions.collect(root, []);
+  const rootRules = conventions.render(rootConventions);
+  const settings: ArenaConfig = {
+    ...config,
+    workingMethod: conventions.section(rootConventions, "Working method"),
+  };
+
+  const gate = new Gatekeeper(settings, control);
   const stopped = () => control?.signal.aborted ?? false;
   const rounds: RoundRecord[] = [];
 
@@ -190,8 +202,6 @@ export async function runBuild(
     // The project's rules, read by us rather than left for the reviewer to find. At plan time
     // no file has changed yet, so only the root applies; the diff review picks up any that sit
     // beside the code that actually moved.
-    const root = (await git.root()) ?? config.projectDir;
-    const rootRules = conventions.render(await conventions.collect(root, []));
     emit({ type: "snapshot", ref: baseline, label: "build-start" });
 
     // ---- Phase 1: plan, reviewed before anything is written -------------------------
@@ -200,11 +210,11 @@ export async function runBuild(
       emit({ type: "phase", phase: "planning", round });
       const turn: BuilderTurn =
         round === 1
-          ? await builder.plan(config, emit, session, instruction, control)
+          ? await builder.plan(settings, emit, session, instruction, control)
           : await builder.replan(
               rounds.at(-1)!.review.findings,
               rounds.at(-1)!.review.summary,
-              config,
+              settings,
               emit,
               session,
               control,
@@ -215,7 +225,7 @@ export async function runBuild(
       const currentPlan = turn.text;
       plan = currentPlan;
 
-      if (config.skipPlanReview) break;
+      if (settings.skipPlanReview) break;
 
       emit({ type: "phase", phase: "plan_review", round });
       const review = await gate.reviewPlan(
@@ -229,7 +239,7 @@ export async function runBuild(
       emit({ type: "review", phase: "plan_review", review });
 
       if (review.verdict === "approve") break;
-      if (round >= config.maxRounds) {
+      if (round >= settings.maxRounds) {
         emit({
           type: "log",
           level: "warn",
@@ -246,11 +256,11 @@ export async function runBuild(
       emit({ type: "phase", phase: "implementing", round });
       const turn: BuilderTurn =
         round === 1
-          ? await builder.implement(config, emit, session, control)
+          ? await builder.implement(settings, emit, session, control)
           : await builder.revise(
               rounds.at(-1)!.review.findings,
               rounds.at(-1)!.review.summary,
-              config,
+              settings,
               emit,
               session,
               control,
@@ -285,7 +295,7 @@ export async function runBuild(
         emit({ type: "phase", phase: "approved", round });
         return finish("approved", diff);
       }
-      if (round >= config.maxRounds) {
+      if (round >= settings.maxRounds) {
         emit({
           type: "log",
           level: "warn",

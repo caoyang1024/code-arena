@@ -84,6 +84,43 @@ export async function collect(root: string, changedFiles: string[]): Promise<Con
   return found;
 }
 
+/**
+ * Pull one `## Heading` section out of the collected conventions.
+ *
+ * The working method -- what happens at each stage and what each model is told there -- is
+ * mostly the prompts, so making it editable does not need a stage interpreter, only a place
+ * for a project to say what it wants said. A section of a file the models already read is
+ * that place; a new config format would be a new thing to learn for no more expressiveness.
+ *
+ * Later files win, matching the scope rule: a subtree can restate the method for its own code.
+ */
+export function section(conventions: Convention[], heading: string): string {
+  const wanted = heading.trim().toLowerCase();
+  let found = "";
+
+  for (const c of conventions) {
+    const lines = c.text.split("\n");
+    let capturing = false;
+    const body: string[] = [];
+
+    for (const line of lines) {
+      const match = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (match) {
+        const isWanted = match[2]!.trim().toLowerCase() === wanted;
+        if (capturing && !isWanted) break; // the next heading of any depth ends the section
+        capturing = isWanted;
+        continue;
+      }
+      if (capturing) body.push(line);
+    }
+
+    const text = body.join("\n").trim();
+    if (text) found = text;
+  }
+
+  return found;
+}
+
 /** Render for a prompt, or "" when the project states no conventions. */
 export function render(conventions: Convention[]): string {
   if (conventions.length === 0) return "";

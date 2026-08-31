@@ -150,9 +150,17 @@ about which file governs which code: a file governs the directory tree it sits i
 deeply nested one wins where they conflict. Unmet rules come back as findings; met ones are
 passed over in silence.
 
+A `## Working method` section, if you write one, is given verbatim to **both** models at every
+stage. That is most of what a working method actually is — the stages are code and a project
+cannot invent a phase, but what each model is told at each one is yours. It narrows the method
+rather than replacing the sequencing the pipeline depends on. A nested file can restate it for
+its own subtree.
+
 No new format — whatever your project writes is what the change is checked against. `New
 project…` scaffolds a starter `AGENTS.md`; this repository's own is at
-[AGENTS.md](AGENTS.md).
+[AGENTS.md](AGENTS.md), and its working method is the default this tool was built around:
+talk before building, say what is undecided, do only what was asked, don't fold to sound
+agreeable, and check claims rather than assert them.
 
 The reviewer is also asked what a change makes **stale** — documentation still describing the
 old behaviour, callers left unupdated, a test that should exist for the new contract. Those are

@@ -50,6 +50,33 @@ console.log("\nconventions: scope follows the directory tree");
   fs.rmSync(empty, { recursive: true, force: true });
 }
 
+console.log("\nconventions: the working method section");
+{
+  const { section } = await import("../src/core/conventions.js");
+  const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "arena-sect-"));
+  const w = (p: string, body: string) => {
+    fs.mkdirSync(path.join(d2, path.dirname(p)), { recursive: true });
+    fs.writeFileSync(path.join(d2, p), body);
+  };
+  w("AGENTS.md", [
+    "# proj", "",
+    "## Conventions", "- always test", "",
+    "## Working method", "Talk first. Build only when told.", "More method.", "",
+    "## Other", "not this",
+  ].join("\n"));
+  w("src/AGENTS.md", ["## Working method", "The src subtree overrides it."].join("\n"));
+
+  const rootOnly = section(await collect(d2, []), "Working method");
+  a(rootOnly === "Talk first. Build only when told.\nMore method.", "extracts the section and stops at the next heading");
+  a(!rootOnly.includes("always test"), "does not bleed in from a sibling section");
+
+  const nested = section(await collect(d2, ["src/a.ts"]), "Working method");
+  a(nested === "The src subtree overrides it.", "a nested file's version wins");
+
+  a(section(await collect(d2, []), "Nonexistent") === "", "a missing section is empty, not an error");
+  fs.rmSync(d2, { recursive: true, force: true });
+}
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\n${failed === 0 ? "\x1b[32m" : "\x1b[31m"}${passed} passed, ${failed} failed\x1b[0m\n`);
 process.exit(failed === 0 ? 0 : 1);

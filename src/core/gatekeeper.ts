@@ -14,6 +14,11 @@ import type { ArenaConfig, ArenaEvent, Review, TurnControl } from "./types.js";
 
 type Emit = (event: ArenaEvent) => void;
 
+/** The project's own account of how work proceeds, appended to the charter when it states one. */
+function methodSuffix(method?: string): string {
+  return method?.trim() ? `\n\n--- HOW WORK PROCEEDS HERE ---\n${method.trim()}` : "";
+}
+
 const CHARTER = `You are the gatekeeper on a two-model engineering team. Another model wrote
 the work below. Your job is to decide whether it should be accepted.
 
@@ -211,7 +216,7 @@ approved -- you are being asked whether the reasoning holds.`,
     // One thread across all plan rounds, so round 2 knows what it asked for in round 1.
     this.planThread ??= this.newThread();
     const prompt = [
-      CHARTER,
+      CHARTER + methodSuffix(this.config.workingMethod),
       "",
       "You are reviewing a PLAN, not code. Judge whether this approach will actually solve the",
       "task correctly: wrong approach, missed requirement, ignored existing abstraction,",
@@ -240,7 +245,7 @@ approved -- you are being asked whether the reasoning holds.`,
   ): Promise<Review> {
     this.diffThread ??= this.newThread();
     const prompt = [
-      CHARTER,
+      CHARTER + methodSuffix(this.config.workingMethod),
       "",
       "You are reviewing a DIFF. The working tree already contains these changes, so you can",
       "open any file to see the full post-change context. Look for: correctness bugs, missed",
