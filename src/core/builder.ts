@@ -127,6 +127,10 @@ async function drive(
     options: {
       abortController: abort,
       cwd: config.projectDir,
+      // Drive the Claude Code the user actually signed in to, rather than the SDK's bundled
+      // copy -- the same reasoning as codex-path.ts. Keeps versions and credentials in one
+      // place instead of two.
+      ...(config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {}),
       ...(config.builderModel ? { model: config.builderModel } : {}),
       permissionMode: opts.mode === "plan" ? "plan" : "default",
       ...(opts.resume ? { resume: opts.resume } : {}),

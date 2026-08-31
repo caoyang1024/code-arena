@@ -97,6 +97,8 @@ export interface ArenaConfig {
   gatekeeperModel?: string;
   /** Absolute path to a code-signed codex binary. Never the npm-vendored one. */
   codexPath: string;
+  /** Absolute path to the user's Claude Code binary. Omit to use the SDK's bundled copy. */
+  claudePath?: string;
   /** Skip the plan review and go straight to implementing after planning. */
   skipPlanReview?: boolean;
 

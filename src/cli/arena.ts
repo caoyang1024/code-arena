@@ -10,6 +10,7 @@ import readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { runChat, runBuild } from "../core/orchestrator.js";
 import { resolveCodex } from "../core/codex-path.js";
+import { resolveClaude } from "../core/claude-path.js";
 import type { ArenaConfig, ArenaEvent, Finding } from "../core/types.js";
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
@@ -130,11 +131,20 @@ async function main() {
     process.exit(1);
   }
 
-  const config: ArenaConfig = { projectDir, maxRounds, skipPlanReview, codexPath: codex.path };
+  const claude = await resolveClaude();
+  if (!claude.usable) console.log(yellow(`\n  ! builder: ${claude.detail}`));
+
+  const config: ArenaConfig = {
+    projectDir,
+    maxRounds,
+    skipPlanReview,
+    codexPath: codex.path,
+    ...(claude.path ? { claudePath: claude.path } : {}),
+  };
 
   console.log(bold(`\nCodeArena`));
   console.log(dim(`  project:    ${projectDir}`));
-  console.log(dim(`  builder:    Claude — read-only until you decide`));
+  console.log(dim(`  builder:    Claude ${claude.version ?? ""} — read-only until you decide`));
   console.log(dim(`  gatekeeper: ${codex.version}, read-only`));
   console.log(dim(`  max rounds: ${maxRounds}`));
   console.log(

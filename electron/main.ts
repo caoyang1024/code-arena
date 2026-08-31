@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runChat, runBuild } from "../src/core/orchestrator.js";
 import { resolveCodex } from "../src/core/codex-path.js";
+import { resolveClaude } from "../src/core/claude-path.js";
 import { Git } from "../src/core/git.js";
 import { replayFixture } from "../src/core/fixture.js";
 import type { ArenaConfig, ArenaEvent } from "../src/core/types.js";
@@ -96,18 +97,11 @@ ipcMain.handle("arena:doctor", async (_e, projectDir: string): Promise<DoctorRep
     project: { ok: false, detail: "" },
   };
 
-  if (process.env.ANTHROPIC_API_KEY) {
-    report.builder = { ok: true, detail: "API key (metered)" };
-  } else if (process.platform === "darwin") {
-    try {
-      await exec("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"]);
-      report.builder = { ok: true, detail: "subscription login" };
-    } catch {
-      report.builder = { ok: false, detail: "not logged in — run `claude` once" };
-    }
-  } else {
-    report.builder = { ok: false, detail: "no credentials found" };
-  }
+  // Ask claude auth status rather than inferring from credential storage. An earlier version
+  // checked only whether the keychain entry existed, and showed a green tick for an account
+  // that could not make a single request.
+  const claude = await resolveClaude();
+  report.builder = { ok: claude.usable, detail: claude.detail };
 
   const codex = await resolveCodex();
   if (!codex) {
@@ -162,12 +156,14 @@ function ensureProject(projectDir: string) {
   }
 }
 
-function configFor(opts: TurnOptions, codexPath: string): ArenaConfig {
+async function configFor(opts: TurnOptions, codexPath: string): Promise<ArenaConfig> {
+  const claude = await resolveClaude();
   return {
     projectDir: opts.projectDir,
     maxRounds: opts.maxRounds,
     skipPlanReview: opts.skipPlanReview,
     codexPath,
+    ...(claude.path ? { claudePath: claude.path } : {}),
   };
 }
 
@@ -184,7 +180,7 @@ ipcMain.handle(
     const codex = await resolveCodex();
 
     running = true;
-    void runChat(opts.message, configFor(opts, codex?.path ?? ""), send, session)
+    void runChat(opts.message, await configFor(opts, codex?.path ?? ""), send, session)
       .then((next) => {
         session = next;
       })
@@ -229,7 +225,7 @@ ipcMain.handle(
     }
 
     running = true;
-    void runBuild(configFor(opts, codex.path), send, session, opts.instruction)
+    void runBuild(await configFor(opts, codex.path), send, session, opts.instruction)
       .then((outcome) => {
         session = outcome.sessionId;
       })

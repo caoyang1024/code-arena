@@ -1,6 +1,6 @@
 // electron/main.ts
 import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
-import path3 from "node:path";
+import path4 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/core/git.ts
@@ -835,6 +835,10 @@ async function drive(prompt, config, emit, opts) {
     options: {
       abortController: abort,
       cwd: config.projectDir,
+      // Drive the Claude Code the user actually signed in to, rather than the SDK's bundled
+      // copy -- the same reasoning as codex-path.ts. Keeps versions and credentials in one
+      // place instead of two.
+      ...config.claudePath ? { pathToClaudeCodeExecutable: config.claudePath } : {},
       ...config.builderModel ? { model: config.builderModel } : {},
       permissionMode: opts.mode === "plan" ? "plan" : "default",
       ...opts.resume ? { resume: opts.resume } : {},
@@ -1103,10 +1107,10 @@ async function exists(p) {
     return false;
   }
 }
-async function signature(path4) {
+async function signature(path5) {
   if (process.platform !== "darwin") return { authority: null, team: null };
   try {
-    const { stderr } = await exec2("codesign", ["-dv", "--verbose=2", path4]).catch(
+    const { stderr } = await exec2("codesign", ["-dv", "--verbose=2", path5]).catch(
       (e) => ({ stderr: e.stderr ?? "" })
     );
     const authority = stderr.match(/^Authority=(.+)$/m)?.[1] ?? null;
@@ -1116,27 +1120,27 @@ async function signature(path4) {
     return { authority: null, team: null };
   }
 }
-async function probe(path4) {
-  if (!await exists(path4)) return null;
-  const { authority, team } = await signature(path4);
+async function probe(path5) {
+  if (!await exists(path5)) return null;
+  const { authority, team } = await signature(path5);
   const signedByOpenAI = process.platform !== "darwin" || team === OPENAI_TEAM_ID && (authority?.includes("Developer ID Application") ?? false);
   let version = "unknown";
   try {
-    version = (await exec2(path4, ["--version"])).stdout.trim();
+    version = (await exec2(path5, ["--version"])).stdout.trim();
   } catch {
     return null;
   }
   let loggedIn = false;
   let loginDetail = "not logged in";
   try {
-    const { stdout, stderr } = await exec2(path4, ["login", "status"]);
+    const { stdout, stderr } = await exec2(path5, ["login", "status"]);
     loginDetail = `${stdout}${stderr}`.trim() || loginDetail;
   } catch (e) {
     const err = e;
     loginDetail = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim() || loginDetail;
   }
   loggedIn = /logged in/i.test(loginDetail);
-  return { path: path4, version, signedByOpenAI, authority, loggedIn, loginDetail };
+  return { path: path5, version, signedByOpenAI, authority, loggedIn, loginDetail };
 }
 async function resolveCodex() {
   const override = process.env.CODEARENA_CODEX_PATH;
@@ -1146,6 +1150,121 @@ async function resolveCodex() {
     if (found?.signedByOpenAI) return found;
   }
   return null;
+}
+
+// src/core/claude-path.ts
+import { execFile as execFile3 } from "node:child_process";
+import { promisify as promisify3 } from "node:util";
+import fs3 from "node:fs/promises";
+import path3 from "node:path";
+import os2 from "node:os";
+var exec3 = promisify3(execFile3);
+async function exists2(p) {
+  try {
+    await fs3.access(p, fs3.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function candidates() {
+  const out = [];
+  if (process.env.CODEARENA_CLAUDE_PATH) out.push(process.env.CODEARENA_CLAUDE_PATH);
+  const appSupport = path3.join(
+    os2.homedir(),
+    "Library/Application Support/Claude/claude-code"
+  );
+  try {
+    const versions = await fs3.readdir(appSupport);
+    versions.filter((v) => /^\d/.test(v)).sort((a, b) => b.localeCompare(a, void 0, { numeric: true })).forEach((v) => out.push(path3.join(appSupport, v, "claude.app/Contents/MacOS/claude")));
+  } catch {
+  }
+  out.push(
+    path3.join(os2.homedir(), ".claude/local/claude"),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude"
+  );
+  return out;
+}
+async function authStatus(binary) {
+  try {
+    const { stdout } = await exec3(binary, ["auth", "status"], { timeout: 15e3 });
+    const parsed = JSON.parse(stdout);
+    return {
+      loggedIn: parsed.loggedIn === true,
+      email: typeof parsed.email === "string" ? parsed.email : null,
+      authMethod: typeof parsed.authMethod === "string" ? parsed.authMethod : null,
+      subscriptionType: typeof parsed.subscriptionType === "string" ? parsed.subscriptionType : null
+    };
+  } catch {
+    return null;
+  }
+}
+async function resolveClaude() {
+  const unusable = (detail) => ({
+    path: null,
+    version: null,
+    loggedIn: false,
+    email: null,
+    authMethod: null,
+    subscriptionType: null,
+    usable: false,
+    detail
+  });
+  if (process.env.ANTHROPIC_API_KEY) {
+    return {
+      path: null,
+      version: null,
+      loggedIn: true,
+      email: null,
+      authMethod: "api_key",
+      subscriptionType: null,
+      usable: true,
+      detail: "ANTHROPIC_API_KEY is set \u2014 requests are billed per token"
+    };
+  }
+  for (const candidate of await candidates()) {
+    if (!await exists2(candidate)) continue;
+    const status = await authStatus(candidate);
+    if (!status) continue;
+    let version = null;
+    try {
+      version = (await exec3(candidate, ["--version"], { timeout: 1e4 })).stdout.trim();
+    } catch {
+    }
+    if (!status.loggedIn) {
+      return {
+        ...unusable(`not signed in \u2014 run: "${candidate}" auth login`),
+        path: candidate,
+        version
+      };
+    }
+    if (!status.subscriptionType) {
+      return {
+        path: candidate,
+        version,
+        loggedIn: true,
+        email: status.email ?? null,
+        authMethod: status.authMethod ?? null,
+        subscriptionType: null,
+        usable: false,
+        detail: `signed in as ${status.email ?? "unknown"} but no plan is attached (subscriptionType: null), so requests bill against API credits. Attach a Claude plan to this account, sign in with one that has it ("${candidate}" auth login), or set ANTHROPIC_API_KEY to pay per token.`
+      };
+    }
+    return {
+      path: candidate,
+      version,
+      loggedIn: true,
+      email: status.email ?? null,
+      authMethod: status.authMethod ?? null,
+      subscriptionType: status.subscriptionType,
+      usable: true,
+      detail: `${status.subscriptionType} plan, signed in as ${status.email ?? "unknown"}`
+    };
+  }
+  return unusable(
+    "no Claude Code install found \u2014 install the Claude desktop app or the claude CLI, or set ANTHROPIC_API_KEY"
+  );
 }
 
 // src/core/fixture.ts
@@ -1323,10 +1442,10 @@ var DEMO_DIFF = `diff --git a/calc.js b/calc.js
 `;
 
 // electron/main.ts
-import { execFile as execFile3 } from "node:child_process";
-import { promisify as promisify3 } from "node:util";
-var exec3 = promisify3(execFile3);
-var dirname = path3.dirname(fileURLToPath(import.meta.url));
+import { execFile as execFile4 } from "node:child_process";
+import { promisify as promisify4 } from "node:util";
+var exec4 = promisify4(execFile4);
+var dirname = path4.dirname(fileURLToPath(import.meta.url));
 var win = null;
 var running = false;
 var session = null;
@@ -1340,12 +1459,12 @@ function createWindow() {
     titleBarStyle: "hiddenInset",
     backgroundColor: "#0b0d10",
     webPreferences: {
-      preload: path3.join(dirname, "preload.cjs"),
+      preload: path4.join(dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false
     }
   });
-  win.loadFile(path3.join(dirname, "../dist-renderer/index.html"));
+  win.loadFile(path4.join(dirname, "../dist-renderer/index.html"));
   if (process.env.CODEARENA_DEMO) {
     win.webContents.once("did-finish-load", () => {
       const target = win?.webContents;
@@ -1377,18 +1496,8 @@ ipcMain.handle("arena:doctor", async (_e, projectDir) => {
     gatekeeper: { ok: false, detail: "" },
     project: { ok: false, detail: "" }
   };
-  if (process.env.ANTHROPIC_API_KEY) {
-    report.builder = { ok: true, detail: "API key (metered)" };
-  } else if (process.platform === "darwin") {
-    try {
-      await exec3("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"]);
-      report.builder = { ok: true, detail: "subscription login" };
-    } catch {
-      report.builder = { ok: false, detail: "not logged in \u2014 run `claude` once" };
-    }
-  } else {
-    report.builder = { ok: false, detail: "no credentials found" };
-  }
+  const claude = await resolveClaude();
+  report.builder = { ok: claude.usable, detail: claude.detail };
   const codex = await resolveCodex();
   if (!codex) {
     report.gatekeeper = { ok: false, detail: "no code-signed codex found" };
@@ -1430,12 +1539,14 @@ function ensureProject(projectDir) {
     projectOfSession = projectDir;
   }
 }
-function configFor(opts, codexPath) {
+async function configFor(opts, codexPath) {
+  const claude = await resolveClaude();
   return {
     projectDir: opts.projectDir,
     maxRounds: opts.maxRounds,
     skipPlanReview: opts.skipPlanReview,
-    codexPath
+    codexPath,
+    ...claude.path ? { claudePath: claude.path } : {}
   };
 }
 ipcMain.handle(
@@ -1446,7 +1557,7 @@ ipcMain.handle(
     const send = (e) => event.sender.send("arena:event", e);
     const codex = await resolveCodex();
     running = true;
-    void runChat(opts.message, configFor(opts, codex?.path ?? ""), send, session).then((next) => {
+    void runChat(opts.message, await configFor(opts, codex?.path ?? ""), send, session).then((next) => {
       session = next;
     }).finally(() => {
       running = false;
@@ -1474,7 +1585,7 @@ ipcMain.handle(
       return { started: false, reason: "Gatekeeper unavailable \u2014 check Setup." };
     }
     running = true;
-    void runBuild(configFor(opts, codex.path), send, session, opts.instruction).then((outcome) => {
+    void runBuild(await configFor(opts, codex.path), send, session, opts.instruction).then((outcome) => {
       session = outcome.sessionId;
     }).catch(
       (e) => send({ type: "log", level: "error", message: String(e?.message ?? e) })

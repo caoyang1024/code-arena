@@ -56,8 +56,21 @@ npx install-electron
 npm run doctor
 ```
 
-`doctor` checks: Claude credentials (login Keychain or `ANTHROPIC_API_KEY`), a code-signed
-codex binary and its ChatGPT login, and that the target directory is a git repo.
+`doctor` checks both agents and the project. For the builder it asks `claude auth status`
+rather than inspecting credential storage — including `subscriptionType`, which is the field
+that decides whether requests will actually go through.
+
+**`subscriptionType: null` with `loggedIn: true` is the trap.** Authentication succeeds, so
+nothing looks wrong, but requests fall through to API credit billing and the first symptom is
+`Credit balance is too low` arriving from the middle of a build. An earlier version of
+`doctor` reported a green tick here, because it only checked that the `Claude Code-credentials`
+keychain entry existed — on this machine that entry held nothing but MCP OAuth tokens. A
+preflight that lies is worse than no preflight.
+
+CodeArena drives the Claude Code binary you are already signed in to
+(`~/Library/Application Support/Claude/claude-code/<version>/…`, or the `claude` CLI), not the
+copy bundled with the SDK — the same reasoning as the codex binary. Override with
+`CODEARENA_CLAUDE_PATH`.
 
 ## Use
 

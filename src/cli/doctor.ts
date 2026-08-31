@@ -2,34 +2,13 @@
  * Preflight. Run this before anything else -- it answers "can this machine actually run a
  * dual-model task", which is the question that costs the most time to debug later.
  */
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { resolveCodex, probe } from "../core/codex-path.js";
+import { resolveClaude } from "../core/claude-path.js";
 import { Git } from "../core/git.js";
-
-const exec = promisify(execFile);
 
 const ok = (s: string) => `\x1b[32m✓\x1b[0m ${s}`;
 const bad = (s: string) => `\x1b[31m✗\x1b[0m ${s}`;
 const warn = (s: string) => `\x1b[33m!\x1b[0m ${s}`;
-
-async function claudeAuth(): Promise<{ ok: boolean; detail: string }> {
-  if (process.env.ANTHROPIC_API_KEY) {
-    return { ok: true, detail: "ANTHROPIC_API_KEY is set (metered API billing)" };
-  }
-  if (process.platform === "darwin") {
-    try {
-      await exec("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"]);
-      return { ok: true, detail: "subscription login found in the login Keychain" };
-    } catch {
-      /* fall through */
-    }
-  }
-  return {
-    ok: false,
-    detail: "no credentials found -- run `claude` once and log in, or export ANTHROPIC_API_KEY",
-  };
-}
 
 async function main() {
   const projectDir = process.argv[2] ?? process.cwd();
@@ -38,9 +17,11 @@ async function main() {
   let fatal = false;
 
   // --- builder side -----------------------------------------------------------------
-  const claude = await claudeAuth();
-  console.log(claude.ok ? ok(`Claude (builder): ${claude.detail}`) : bad(`Claude (builder): ${claude.detail}`));
-  if (!claude.ok) fatal = true;
+  const claude = await resolveClaude();
+  const line = `Claude (builder): ${claude.detail}`;
+  console.log(claude.usable ? ok(line) : bad(line));
+  if (claude.path) console.log(`    path: ${claude.path}${claude.version ? ` (${claude.version})` : ""}`);
+  if (!claude.usable) fatal = true;
 
   // --- gatekeeper side --------------------------------------------------------------
   const codex = await resolveCodex();
