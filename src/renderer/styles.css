@@ -19,8 +19,10 @@
   --minor: #6b7484;
   --ok: #2ec4a6;
 
-  /* One line of composer text plus its padding and border. The send button matches it. */
-  --composer-h: 42px;
+  /* Resting height of the writing area: about three lines. This is where the work starts --
+     describing a bug, pasting a trace, thinking out loud -- so it is sized for prose, not for
+     a one-line command. */
+  --composer-h: 82px;
 
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
@@ -507,10 +509,24 @@ body {
   background: var(--surface);
   padding: 12px 16px 14px;
 }
+/*
+ * The field and its button are one object.
+ *
+ * They used to sit side by side, which raised an alignment question with no good answer: a
+ * box sized for writing towers over a button sized for clicking, and matching them shrinks
+ * the box to a single line. Putting the button inside the field removes the question -- the
+ * border belongs to the composer as a whole, and the button floats in its corner.
+ */
 .composer-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
+  position: relative;
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  transition: border-color 0.12s ease;
+}
+.composer-row:focus-within {
+  border-color: #3a4453;
 }
 
 .composer-actions {
@@ -533,33 +549,34 @@ button.build {
  * button; the field grows from there as you type.
  */
 textarea {
-  flex: 1;
+  display: block;
+  width: 100%;
   resize: none;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg);
+  border: none;
+  background: transparent;
   color: var(--text);
   font-family: var(--sans);
-  font-size: 13.5px;
-  line-height: 1.5;
-  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.6;
+  /* Right padding keeps the last line clear of the button. */
+  padding: 13px 96px 13px 14px;
   height: var(--composer-h);
   min-height: var(--composer-h);
-  max-height: 150px;
+  /* Long pastes stay readable instead of scrolling inside a letterbox. */
+  max-height: 40vh;
   overflow-y: auto;
   outline: none;
   user-select: text;
-}
-textarea:focus {
-  border-color: #384252;
 }
 textarea::placeholder {
   color: var(--text-faint);
 }
 
 .composer-row > button {
-  height: var(--composer-h);
-  flex: 0 0 auto;
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  min-width: 68px;
 }
 
 button {

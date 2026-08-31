@@ -661,8 +661,12 @@ function Arena() {
   const grow = useCallback(() => {
     const el = composer.current;
     if (!el) return;
+    // Take the ceiling from the stylesheet rather than repeating it here. A hard-coded 150
+    // silently overrode the CSS max-height and capped the field at a third of what it was
+    // meant to reach.
+    const max = parseFloat(getComputedStyle(el).maxHeight) || Infinity;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
   }, []);
   /** Read inside long-lived listeners, which must not close over a stale projectDir. */
   const projectDirRef = useRef(projectDir);
