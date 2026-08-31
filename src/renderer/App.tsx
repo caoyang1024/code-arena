@@ -651,11 +651,26 @@ function Arena() {
    * the composition events are the belt-and-braces for anything that reports neither.
    */
   const composing = useRef(false);
+
+  /**
+   * Grow the field to fit what has been typed, back to one line when it empties.
+   * A textarea does not do this on its own, and a fixed two-row box next to a one-row button
+   * is what made the composer look crooked.
+   */
+  const composer = useRef<HTMLTextAreaElement>(null);
+  const grow = useCallback(() => {
+    const el = composer.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
+  }, []);
   /** Read inside long-lived listeners, which must not close over a stale projectDir. */
   const projectDirRef = useRef(projectDir);
   useEffect(() => {
     projectDirRef.current = projectDir;
   }, [projectDir]);
+
+  useEffect(grow, [draft, grow]);
 
   useEffect(() => {
     const offEvent = window.arena.onEvent((event) => {
@@ -1071,6 +1086,8 @@ function Arena() {
       <div className="composer">
         <div className="composer-row">
           <textarea
+            ref={composer}
+            rows={1}
             value={draft}
             placeholder={
               running
@@ -1081,7 +1098,10 @@ function Arena() {
                     : "What are you thinking about? Nothing gets written yet."
                   : "Choose a project to begin…"
             }
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              grow();
+            }}
             onCompositionStart={() => {
               composing.current = true;
             }}

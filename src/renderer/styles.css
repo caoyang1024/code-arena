@@ -19,6 +19,9 @@
   --minor: #6b7484;
   --ok: #2ec4a6;
 
+  /* One line of composer text plus its padding and border. The send button matches it. */
+  --composer-h: 42px;
+
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
 }
@@ -522,6 +525,13 @@ button.build {
   font-weight: 620;
   letter-spacing: 0.01em;
 }
+/*
+ * Composer field and button are the same height at rest.
+ *
+ * A textarea defaults to rows=2, which made it 63px next to a 35px button, bottom-aligned --
+ * so the button sat in the corner of a box that towered over it. One row at rest matches the
+ * button; the field grows from there as you type.
+ */
 textarea {
   flex: 1;
   resize: none;
@@ -533,8 +543,10 @@ textarea {
   font-size: 13.5px;
   line-height: 1.5;
   padding: 10px 12px;
-  min-height: 42px;
+  height: var(--composer-h);
+  min-height: var(--composer-h);
   max-height: 150px;
+  overflow-y: auto;
   outline: none;
   user-select: text;
 }
@@ -543,6 +555,11 @@ textarea:focus {
 }
 textarea::placeholder {
   color: var(--text-faint);
+}
+
+.composer-row > button {
+  height: var(--composer-h);
+  flex: 0 0 auto;
 }
 
 button {
