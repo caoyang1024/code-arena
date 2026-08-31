@@ -221,6 +221,21 @@ is a file.
 Snapshot refs are pruned when a build finishes, keeping the latest baseline so a rollback stays
 possible. Each ref pins an entire working tree, and nothing used to prune them.
 
+**The gate has a latch.** When the gatekeeper does not approve — rounds exhausted, or you
+pressed Stop — the outcome offers **Discard changes** or **Keep them**, and discarding is
+itself undoable: the state being thrown away is snapshotted first and the ref shown, so
+`git checkout <ref> -- .` brings it back.
+
+Until this existed, approval and rejection left the working tree identically changed and
+neither offered a way out. The review only altered the colour of a label, `restore()` had no
+caller anywhere in the product, and the argument in `policy.ts` for denying `git commit` —
+that CodeArena's rollback guarantee depends on the snapshot baseline — was protecting a
+feature that had never been wired up. "A review that has to pass before the diff is accepted"
+described nothing the code did.
+
+Discarding is never automatic. Rounds of rejected work are usually partly usable, and throwing
+them away on the model's say-so is not the same as gating.
+
 **Round caps are the safety mechanism.** Two models that disagree will ping-pong forever.
 `maxRounds` turns that into an escalation instead of a runaway bill.
 

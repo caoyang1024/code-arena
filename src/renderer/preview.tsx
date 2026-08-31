@@ -15,7 +15,15 @@ import "./styles.css";
 
 const listeners = new Set<(e: ArenaEvent) => void>();
 const idle = new Set<() => void>();
+
+// Preview-only: lets a specific state be driven directly instead of waiting out the replay.
+declare global {
+  interface Window {
+    __arenaEmit?: (e: ArenaEvent) => void;
+  }
+}
 const emit = (e: ArenaEvent) => listeners.forEach((l) => l(e));
+window.__arenaEmit = emit;
 
 window.arena = {
   doctor: async () => ({
@@ -47,6 +55,7 @@ window.arena = {
   loginCancel: async () => {},
   onLoginDone: () => () => {},
   openExternal: async () => {},
+  revert: async () => ({ ok: true, undo: "ab12cd34ef56" }),
   revealDiff: async () => {},
   onIdle: (cb) => {
     idle.add(cb);

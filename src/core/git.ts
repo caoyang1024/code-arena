@@ -157,8 +157,12 @@ export class Git {
    *
    * Files created after the snapshot are removed explicitly -- `--reset` restores tracked
    * content but does not delete what the snapshot never knew about.
+   *
+   * Returns the snapshot taken immediately before the restore, so discarding an agent's work
+   * is itself undoable. Throwing away several rounds of edits on one click, with no way back,
+   * would be a worse failure than the one it is undoing.
    */
-  async restore(snapshot: string): Promise<void> {
+  async restore(snapshot: string): Promise<string> {
     const current = await this.snapshot("pre-restore");
     const added = (await this.run(["diff", "--name-only", "--diff-filter=A", snapshot, current]))
       .split("\n")
@@ -176,6 +180,8 @@ export class Git {
     for (const file of added) {
       await fs.rm(path.join(root, file), { force: true });
     }
+
+    return current;
   }
 
   /** Refs we have created in this repository. */

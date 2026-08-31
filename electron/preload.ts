@@ -55,6 +55,10 @@ const api = {
   },
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke("arena:openExternal", url),
 
+  /** Discard the build's changes, returning to the pre-build snapshot. Itself undoable. */
+  revert: (opts: { projectDir: string; baseline: string }): Promise<{ ok: boolean; undo?: string; reason?: string }> =>
+    ipcRenderer.invoke("arena:revert", opts),
+
   revealDiff: (projectDir: string) => ipcRenderer.invoke("arena:revealDiff", projectDir),
 
   /** Fires when a turn finishes, whatever its outcome. */

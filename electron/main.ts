@@ -414,6 +414,33 @@ ipcMain.handle("arena:openExternal", async (_e, url: string) => {
   }
 });
 
+/**
+ * The reject half of the gate.
+ *
+ * Until this existed, approval and rejection left the working tree identically changed and the
+ * review only altered the colour of a label -- "a review that has to pass before the diff is
+ * accepted" was not something the code actually did. Reverting is itself undoable: the state
+ * being discarded is snapshotted first and its ref returned, because throwing away several
+ * rounds of work on one click with no way back is a worse failure than the one it undoes.
+ */
+ipcMain.handle(
+  "arena:revert",
+  async (
+    _e,
+    opts: { projectDir: string; baseline: string },
+  ): Promise<{ ok: boolean; undo?: string; reason?: string }> => {
+    if (running) return { ok: false, reason: "Something is still running." };
+    try {
+      const git = new Git(opts.projectDir);
+      if (!(await git.isRepo())) return { ok: false, reason: "Not a git repository." };
+      const undo = await git.restore(opts.baseline);
+      return { ok: true, undo };
+    } catch (error) {
+      return { ok: false, reason: (error as Error).message };
+    }
+  },
+);
+
 ipcMain.handle("arena:revealDiff", async (_e, projectDir: string) => {
   shell.openPath(projectDir);
 });

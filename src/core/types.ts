@@ -64,6 +64,12 @@ export interface RoundRecord {
 export interface TaskResult {
   phase: Phase;
   plan: string | null;
+  /**
+   * The pre-build snapshot. Reverting to it is the "reject" half of the gate -- without it,
+   * approval and rejection left the working tree in exactly the same state and the review
+   * only changed the colour of a label.
+   */
+  baseline?: string | null;
   rounds: RoundRecord[];
   /** Unified diff of everything the builder changed, relative to the start snapshot. */
   diff: string;

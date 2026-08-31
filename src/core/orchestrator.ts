@@ -116,6 +116,7 @@ export async function runBuild(
       plan,
       rounds,
       diff,
+      baseline: baselineRef,
       cost: cost(),
       sessionId: session,
       ...(error ? { error } : {}),

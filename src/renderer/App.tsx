@@ -40,6 +40,10 @@ interface ArenaApi {
   loginCancel(): Promise<void>;
   onLoginDone(cb: (result: { ok: boolean; detail: string }) => void): () => void;
   openExternal(url: string): Promise<void>;
+  revert(opts: {
+    projectDir: string;
+    baseline: string;
+  }): Promise<{ ok: boolean; undo?: string; reason?: string }>;
   revealDiff(projectDir: string): Promise<void>;
   onEvent(cb: (event: ArenaEvent) => void): () => void;
   onIdle(cb: () => void): () => void;
@@ -372,32 +376,137 @@ function BlockView({ block, projectDir }: { block: Block; projectDir: string }) 
       );
 
     case "outcome": {
-      const { phase, rounds, diff, cost } = block.result;
+      const { phase, rounds, diff, cost, baseline } = block.result;
       const title =
         phase === "approved"
           ? "Approved by the gatekeeper"
           : phase === "escalated"
-            ? "Escalated — needs you"
-            : "Failed";
+            ? "Not approved — your call"
+            : phase === "cancelled"
+              ? "Stopped"
+              : "Failed";
       const changed = diff ? diff.split("\n").filter((l) => /^[+-][^+-]/.test(l)).length : 0;
       return (
-        <div className={`outcome ${phase}`}>
-          <div style={{ flex: 1 }}>
-            <div className="outcome-title">{title}</div>
-            <div className="outcome-meta">
-              {rounds.length} review round{rounds.length === 1 ? "" : "s"} · {changed} changed lines
-              {" · "}builder ${cost.builderUsd.toFixed(4)} · gatekeeper{" "}
-              {(cost.gatekeeperInputTokens / 1000).toFixed(1)}k in /{" "}
-              {(cost.gatekeeperOutputTokens / 1000).toFixed(1)}k out
-            </div>
-          </div>
-          {diff && (
-            <button onClick={() => window.arena.revealDiff(projectDir)}>Open project</button>
-          )}
-        </div>
+        <Outcome
+          phase={phase}
+          title={title}
+          rounds={rounds.length}
+          changed={changed}
+          cost={cost}
+          diff={diff}
+          baseline={baseline ?? null}
+          projectDir={projectDir}
+        />
       );
     }
   }
+}
+
+/**
+ * The end of a build, and the decision it forces.
+ *
+ * Approval and rejection used to differ only in the colour of a label: both left every change
+ * in the working tree, and neither offered a way out, so the gate was nominal -- "a review
+ * that has to pass before the diff is accepted" described nothing the code did.
+ *
+ * When the gatekeeper does not approve, the choice belongs here and it belongs to the human.
+ * Reverting automatically would throw away rounds of work that are often partly usable;
+ * offering nothing at all is what made gating a word rather than a behaviour. Discarding is
+ * itself undoable -- the state being thrown away is snapshotted first and the ref shown.
+ */
+function Outcome({
+  phase,
+  title,
+  rounds,
+  changed,
+  cost,
+  diff,
+  baseline,
+  projectDir,
+}: {
+  phase: TaskResult["phase"];
+  title: string;
+  rounds: number;
+  changed: number;
+  cost: TaskResult["cost"];
+  diff: string;
+  baseline: string | null;
+  projectDir: string;
+}) {
+  const [state, setState] = useState<"open" | "confirming" | "working" | "reverted" | "kept">(
+    phase === "approved" ? "kept" : "open",
+  );
+  const [undoRef, setUndoRef] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const canRevert = Boolean(baseline) && changed > 0;
+
+  const revert = async () => {
+    if (!baseline) return;
+    setState("working");
+    setError(null);
+    const res = await window.arena.revert({ projectDir, baseline });
+    if (res.ok) {
+      setUndoRef(res.undo ?? null);
+      setState("reverted");
+    } else {
+      setError(res.reason ?? "Could not discard the changes.");
+      setState("open");
+    }
+  };
+
+  return (
+    <div className={`outcome ${phase}`}>
+      <div style={{ flex: 1 }}>
+        <div className="outcome-title">{title}</div>
+        <div className="outcome-meta">
+          {rounds} review round{rounds === 1 ? "" : "s"} · {changed} changed lines
+          {" · "}builder ${cost.builderUsd.toFixed(4)} · gatekeeper{" "}
+          {(cost.gatekeeperInputTokens / 1000).toFixed(1)}k in /{" "}
+          {(cost.gatekeeperOutputTokens / 1000).toFixed(1)}k out
+        </div>
+
+        {state === "reverted" && (
+          <div className="outcome-note">
+            Discarded.
+            {undoRef && (
+              <>
+                {" "}Still recoverable: <code>git checkout {undoRef.slice(0, 8)} -- .</code>
+              </>
+            )}
+          </div>
+        )}
+        {state === "kept" && phase !== "approved" && (
+          <div className="outcome-note">Kept in your working tree.</div>
+        )}
+        {error && <div className="outcome-note error">{error}</div>}
+      </div>
+
+      {state === "open" && canRevert && (
+        <div className="outcome-actions">
+          <button className="danger" onClick={() => setState("confirming")}>
+            Discard changes
+          </button>
+          <button onClick={() => setState("kept")}>Keep them</button>
+        </div>
+      )}
+      {state === "confirming" && (
+        <div className="outcome-actions">
+          <span className="outcome-confirm">Discard {changed} lines?</span>
+          <button className="danger" onClick={() => void revert()}>
+            Yes
+          </button>
+          <button onClick={() => setState("open")}>Cancel</button>
+        </div>
+      )}
+      {state === "working" && <div className="outcome-actions">working…</div>}
+      {(state === "kept" || state === "reverted") && (
+        <div className="outcome-actions">
+          <button onClick={() => window.arena.revealDiff(projectDir)}>Open project</button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // -----------------------------------------------------------------------------------------

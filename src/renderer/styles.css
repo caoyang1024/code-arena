@@ -813,3 +813,54 @@ button.stop:hover {
   margin: 5px 4px;
   background: var(--border);
 }
+
+/* --------------------------------------------------------- outcome actions */
+
+.outcome-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.outcome-confirm {
+  font-size: 11.5px;
+  color: var(--major);
+  white-space: nowrap;
+}
+
+.outcome-note {
+  margin-top: 7px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+.outcome-note.error {
+  color: var(--blocker);
+}
+.outcome-note code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  user-select: all;
+}
+
+button.danger {
+  border-color: rgba(242, 85, 90, 0.4);
+  color: var(--blocker);
+}
+button.danger:hover:not(:disabled) {
+  border-color: var(--blocker);
+  color: var(--blocker);
+}
+
+.outcome.cancelled {
+  border-color: rgba(224, 160, 60, 0.4);
+}
+.outcome.cancelled .outcome-title {
+  color: var(--major);
+}
