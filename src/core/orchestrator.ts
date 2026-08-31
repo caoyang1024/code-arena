@@ -54,7 +54,8 @@ export async function runChat(
   emit({ type: "user.message", text: message });
   emit({ type: "phase", phase: "chatting", round: 1 });
   try {
-    const turn = await builder.chat(message, config, emit, sessionId, control);
+    const { settings } = await withProjectRules(config);
+    const turn = await builder.chat(message, settings, emit, sessionId, control);
     if (turn.cancelled) emit({ type: "cancelled", phase: "chatting" });
     emit({ type: "session", sessionId: turn.sessionId });
     return turn.sessionId;
@@ -66,6 +67,32 @@ export async function runChat(
     });
     return sessionId;
   }
+}
+
+/**
+ * Read the project's rules and fold them into the config every entry point uses.
+ *
+ * Every path through this file needs them, and each one reading its own copy is how three
+ * bugs already got in here. runChat and runSecondOpinion were doing without: the working
+ * method shaped the build but was absent from the conversation, which is where the direction
+ * is actually decided.
+ */
+async function withProjectRules(config: ArenaConfig): Promise<{
+  settings: ArenaConfig;
+  root: string;
+  rootRules: string;
+}> {
+  const git = new Git(config.projectDir);
+  const root = (await git.root()) ?? config.projectDir;
+  const found = await conventions.collect(root, []);
+  return {
+    root,
+    rootRules: conventions.render(found),
+    settings: {
+      ...config,
+      workingMethod: conventions.section(found, "Working method"),
+    },
+  };
 }
 
 /**
@@ -84,7 +111,8 @@ export async function runSecondOpinion(
   conversation: string,
   control?: TurnControl,
 ): Promise<string | null> {
-  const gate = new Gatekeeper(config, control);
+  const { settings } = await withProjectRules(config);
+  const gate = new Gatekeeper(settings, control);
   try {
     emit({ type: "phase", phase: "second_opinion", round: 1 });
     const opinion = await gate.secondOpinion(conversation, emit);
@@ -96,7 +124,7 @@ export async function runSecondOpinion(
     }
 
     emit({ type: "phase", phase: "chatting", round: 1 });
-    const turn = await builder.respondToOpinion(opinion, config, emit, sessionId, control);
+    const turn = await builder.respondToOpinion(opinion, settings, emit, sessionId, control);
     if (turn.cancelled) emit({ type: "cancelled", phase: "chatting" });
     emit({ type: "session", sessionId: turn.sessionId });
     return turn.sessionId;
@@ -130,16 +158,9 @@ export async function runBuild(
 ): Promise<BuildOutcome> {
   const git = new Git(config.projectDir);
 
-  // Read the project's rules before anything is constructed from the config: the reviewer is
-  // built from it, and a gatekeeper created before the working method is known would spend the
-  // whole build without it.
-  const root = (await git.root()) ?? config.projectDir;
-  const rootConventions = await conventions.collect(root, []);
-  const rootRules = conventions.render(rootConventions);
-  const settings: ArenaConfig = {
-    ...config,
-    workingMethod: conventions.section(rootConventions, "Working method"),
-  };
+  // Before anything is constructed from the config: the reviewer is built from it, and a
+  // gatekeeper created before the working method is read would spend the whole build without.
+  const { settings, root, rootRules } = await withProjectRules(config);
 
   const gate = new Gatekeeper(settings, control);
   const stopped = () => control?.signal.aborted ?? false;

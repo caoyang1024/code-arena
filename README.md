@@ -151,7 +151,7 @@ deeply nested one wins where they conflict. Unmet rules come back as findings; m
 passed over in silence.
 
 A `## Working method` section, if you write one, is given verbatim to **both** models at every
-stage. That is most of what a working method actually is — the stages are code and a project
+stage — conversation included, which is where the direction is actually decided. That is most of what a working method actually is — the stages are code and a project
 cannot invent a phase, but what each model is told at each one is yours. It narrows the method
 rather than replacing the sequencing the pipeline depends on. A nested file can restate it for
 its own subtree.
