@@ -38,6 +38,13 @@ const api = {
   loginCode: (code: string): Promise<{ ok: boolean; detail: string }> =>
     ipcRenderer.invoke("arena:login:code", code),
   loginCancel: (): Promise<void> => ipcRenderer.invoke("arena:login:cancel"),
+
+  /** Fires when the sign-in finishes by itself, i.e. no pasted code was needed. */
+  onLoginDone: (callback: (result: { ok: boolean; detail: string }) => void) => {
+    const listener = (_e: unknown, result: { ok: boolean; detail: string }) => callback(result);
+    ipcRenderer.on("arena:login:done", listener);
+    return () => ipcRenderer.removeListener("arena:login:done", listener);
+  },
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke("arena:openExternal", url),
 
   revealDiff: (projectDir: string) => ipcRenderer.invoke("arena:revealDiff", projectDir),

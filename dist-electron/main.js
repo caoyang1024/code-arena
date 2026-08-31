@@ -1288,6 +1288,12 @@ async function startLogin(email) {
   });
   let transcript = "";
   let settled = false;
+  let hasExited = false;
+  child.once("exit", () => {
+    hasExited = true;
+  });
+  child.stdin.on("error", () => {
+  });
   const url = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       if (settled) return;
@@ -1319,15 +1325,42 @@ async function startLogin(email) {
       reject(new LoginError(`Sign-in exited early (code ${code}) before printing a URL.`));
     });
   });
+  const verify = async () => {
+    const auth = await resolveClaude();
+    if (auth.usable) return { ok: true, detail: auth.detail, auth };
+    return {
+      ok: false,
+      detail: auth.loggedIn ? auth.detail : "Sign-in did not take. Check the code and try again.",
+      auth
+    };
+  };
   return {
     url,
+    async waitForExit() {
+      if (!hasExited) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, EXIT_TIMEOUT_MS);
+          child.once("exit", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      }
+      return verify();
+    },
     async submitCode(code) {
       const trimmed = code.trim();
       if (!trimmed) return { ok: false, detail: "No code entered." };
-      child.stdin.write(`${trimmed}
+      if (hasExited) return verify();
+      try {
+        child.stdin.write(`${trimmed}
 `);
-      child.stdin.end();
+        child.stdin.end();
+      } catch {
+        return verify();
+      }
       const exited = await new Promise((resolve) => {
+        if (hasExited) return resolve(true);
         const timer = setTimeout(() => resolve(false), EXIT_TIMEOUT_MS);
         child.once("exit", () => {
           clearTimeout(timer);
@@ -1338,13 +1371,7 @@ async function startLogin(email) {
         child.kill();
         return { ok: false, detail: "Sign-in did not complete in time." };
       }
-      const auth = await resolveClaude();
-      if (auth.usable) return { ok: true, detail: auth.detail, auth };
-      return {
-        ok: false,
-        detail: auth.loggedIn ? auth.detail : "Sign-in did not take. Check the code and try again.",
-        auth
-      };
+      return verify();
     },
     cancel() {
       child.kill();
@@ -1691,8 +1718,14 @@ ipcMain.handle(
     login?.cancel();
     login = null;
     try {
-      login = await startLogin(email);
-      return { ok: true, url: login.url };
+      const handle = await startLogin(email);
+      login = handle;
+      void handle.waitForExit().then((result) => {
+        if (login !== handle) return;
+        login = null;
+        _e.sender.send("arena:login:done", result);
+      });
+      return { ok: true, url: handle.url };
     } catch (error) {
       return { ok: false, reason: error.message };
     }

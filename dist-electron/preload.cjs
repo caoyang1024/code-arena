@@ -33,6 +33,12 @@ var api = {
   loginStart: (email) => import_electron.ipcRenderer.invoke("arena:login:start", email),
   loginCode: (code) => import_electron.ipcRenderer.invoke("arena:login:code", code),
   loginCancel: () => import_electron.ipcRenderer.invoke("arena:login:cancel"),
+  /** Fires when the sign-in finishes by itself, i.e. no pasted code was needed. */
+  onLoginDone: (callback) => {
+    const listener = (_e, result) => callback(result);
+    import_electron.ipcRenderer.on("arena:login:done", listener);
+    return () => import_electron.ipcRenderer.removeListener("arena:login:done", listener);
+  },
   openExternal: (url) => import_electron.ipcRenderer.invoke("arena:openExternal", url),
   revealDiff: (projectDir) => import_electron.ipcRenderer.invoke("arena:revealDiff", projectDir),
   /** Fires when a turn finishes, whatever its outcome. */

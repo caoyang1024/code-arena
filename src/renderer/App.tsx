@@ -32,6 +32,7 @@ interface ArenaApi {
   loginStart(email?: string): Promise<{ ok: boolean; url?: string; reason?: string }>;
   loginCode(code: string): Promise<{ ok: boolean; detail: string }>;
   loginCancel(): Promise<void>;
+  onLoginDone(cb: (result: { ok: boolean; detail: string }) => void): () => void;
   openExternal(url: string): Promise<void>;
   revealDiff(projectDir: string): Promise<void>;
   onEvent(cb: (event: ArenaEvent) => void): () => void;
@@ -437,6 +438,11 @@ function Arena() {
 
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  /** Read inside long-lived listeners, which must not close over a stale projectDir. */
+  const projectDirRef = useRef(projectDir);
+  useEffect(() => {
+    projectDirRef.current = projectDir;
+  }, [projectDir]);
 
   useEffect(() => {
     const offEvent = window.arena.onEvent((event) => {
@@ -449,9 +455,21 @@ function Arena() {
       if (event.type === "done") setPhase(event.result.phase);
     });
     const offIdle = window.arena.onIdle(() => setRunning(false));
+    // The sign-in usually completes in the browser without a pasted code; close the flow
+    // when it does rather than leaving the user staring at a code box.
+    const offLogin = window.arena.onLoginDone((result) => {
+      setLoginBusy(false);
+      setLoginNote(result.detail);
+      if (result.ok) {
+        setLoginUrl(null);
+        setCode("");
+      }
+      void window.arena.doctor(projectDirRef.current).then(setDoctor);
+    });
     return () => {
       offEvent();
       offIdle();
+      offLogin();
     };
   }, []);
 

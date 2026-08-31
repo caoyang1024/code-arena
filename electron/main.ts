@@ -261,8 +261,19 @@ ipcMain.handle(
     login?.cancel();
     login = null;
     try {
-      login = await startLogin(email);
-      return { ok: true, url: login.url };
+      const handle = await startLogin(email);
+      login = handle;
+
+      // The browser leg usually completes the sign-in on its own, without the user ever
+      // pasting a code. Watch for that so the UI can finish instead of waiting for a paste
+      // that is never coming.
+      void handle.waitForExit().then((result) => {
+        if (login !== handle) return; // superseded or cancelled
+        login = null;
+        _e.sender.send("arena:login:done", result);
+      });
+
+      return { ok: true, url: handle.url };
     } catch (error) {
       return { ok: false, reason: (error as Error).message };
     }

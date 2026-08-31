@@ -30,6 +30,14 @@ export interface LoginHandle {
   /** The URL to complete in a browser. Safe to display and to open. */
   url: string;
   /**
+   * Resolves when the flow finishes on its own -- which is the common case.
+   *
+   * The browser leg can complete the sign-in through the redirect callback without the user
+   * ever pasting anything, and the binary then exits. A UI that only ever waits for a pasted
+   * code sits at "Signing in…" forever while the sign-in has, in fact, already succeeded.
+   */
+  waitForExit(): Promise<{ ok: boolean; detail: string }>;
+  /**
    * Hand the code from the browser to the waiting binary.
    *
    * The code is not retained, echoed, or logged anywhere in this process.
@@ -62,6 +70,17 @@ export async function startLogin(email?: string): Promise<LoginHandle> {
 
   let transcript = "";
   let settled = false;
+
+  // Track the exit from the moment we spawn. Attaching an `exit` listener later is a race:
+  // if the process is already gone, `once("exit")` never fires and the caller waits out the
+  // full timeout for an event that happened before it was listening.
+  let hasExited = false;
+  child.once("exit", () => {
+    hasExited = true;
+  });
+  // A write to a stdin whose reader has gone raises EPIPE on the stream. Unhandled, that is
+  // an uncaught exception in the main process.
+  child.stdin.on("error", () => {});
 
   const url = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -99,19 +118,56 @@ export async function startLogin(email?: string): Promise<LoginHandle> {
     });
   });
 
+  /**
+   * Ask the binary who it thinks it is now, rather than trusting an exit code -- the question
+   * that matters is whether a plan is attached, and only auth status answers it.
+   */
+  const verify = async (): Promise<{ ok: boolean; detail: string; auth?: ClaudeAuth }> => {
+    const auth = await resolveClaude();
+    if (auth.usable) return { ok: true, detail: auth.detail, auth };
+    return {
+      ok: false,
+      detail: auth.loggedIn ? auth.detail : "Sign-in did not take. Check the code and try again.",
+      auth,
+    };
+  };
+
   return {
     url,
+
+    async waitForExit() {
+      if (!hasExited) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, EXIT_TIMEOUT_MS);
+          child.once("exit", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      }
+      return verify();
+    },
 
     async submitCode(code: string) {
       const trimmed = code.trim();
       if (!trimmed) return { ok: false, detail: "No code entered." };
 
+      // The browser leg may already have completed the sign-in through the callback, in
+      // which case the binary has exited and there is nobody to read the code. Writing to a
+      // dead process raises EPIPE; just go and check whether it worked.
+      if (hasExited) return verify();
+
       // Straight to the child. Deliberately not stored in a variable that outlives this call,
       // not appended to `transcript`, and not passed to any emit/log path.
-      child.stdin.write(`${trimmed}\n`);
-      child.stdin.end();
+      try {
+        child.stdin.write(`${trimmed}\n`);
+        child.stdin.end();
+      } catch {
+        return verify();
+      }
 
       const exited = await new Promise<boolean>((resolve) => {
+        if (hasExited) return resolve(true);
         const timer = setTimeout(() => resolve(false), EXIT_TIMEOUT_MS);
         child.once("exit", () => {
           clearTimeout(timer);
@@ -123,18 +179,7 @@ export async function startLogin(email?: string): Promise<LoginHandle> {
         child.kill();
         return { ok: false, detail: "Sign-in did not complete in time." };
       }
-
-      // Ask the binary who it thinks it is now, rather than trusting the exit code -- the
-      // question that matters is whether a plan is attached, and only auth status answers it.
-      const auth = await resolveClaude();
-      if (auth.usable) return { ok: true, detail: auth.detail, auth };
-      return {
-        ok: false,
-        detail: auth.loggedIn
-          ? auth.detail
-          : "Sign-in did not take. Check the code and try again.",
-        auth,
-      };
+      return verify();
     },
 
     cancel() {
