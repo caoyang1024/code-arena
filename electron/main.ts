@@ -199,9 +199,29 @@ ipcMain.handle(
       }
       await fsp.mkdir(dir, { recursive: true });
       await exec("git", ["init", "-q"], { cwd: dir });
+      const name = path.basename(dir);
+      await fsp.writeFile(path.join(dir, "README.md"), `# ${name}\n`, "utf8");
+      // AGENTS.md, not CLAUDE.md: it is the one convention file both models read, and
+      // CodeArena quotes it to the reviewer so the rules are checked rather than merely
+      // available. Rules in CLAUDE.md would be visible to the builder and invisible to the
+      // reviewer -- a standard it is judging against but cannot see.
       await fsp.writeFile(
-        path.join(dir, "README.md"),
-        `# ${path.basename(dir)}\n\nDescribe what this is, and what conventions the code should follow.\nThe reviewer reads this file.\n`,
+        path.join(dir, "AGENTS.md"),
+        [
+          `# ${name}`,
+          "",
+          "Rules for this project. Both models read this file, and CodeArena quotes it to the",
+          "reviewer, so anything here is checked before a change is accepted.",
+          "",
+          "A file like this one governs the directory it sits in and everything below it; put",
+          "another in a subdirectory to narrow the rules for that part of the tree.",
+          "",
+          "## Conventions",
+          "",
+          "- (What does finished look like here? Which docs must a behaviour change update?",
+          "  What must every fix come with?)",
+          "",
+        ].join("\n"),
         "utf8",
       );
       await remember(dir);

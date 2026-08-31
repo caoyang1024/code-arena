@@ -18,6 +18,7 @@
  * "build what we just discussed" mean anything.
  */
 import { Git } from "./git.js";
+import * as conventions from "./conventions.js";
 import { Gatekeeper, Cancelled } from "./gatekeeper.js";
 import * as builder from "./builder.js";
 import type { BuilderTurn } from "./builder.js";
@@ -185,6 +186,12 @@ export async function runBuild(
 
     const baseline = await git.snapshot("build-start");
     baselineRef = baseline;
+
+    // The project's rules, read by us rather than left for the reviewer to find. At plan time
+    // no file has changed yet, so only the root applies; the diff review picks up any that sit
+    // beside the code that actually moved.
+    const root = (await git.root()) ?? config.projectDir;
+    const rootRules = conventions.render(await conventions.collect(root, []));
     emit({ type: "snapshot", ref: baseline, label: "build-start" });
 
     // ---- Phase 1: plan, reviewed before anything is written -------------------------
@@ -216,6 +223,7 @@ export async function runBuild(
         currentPlan,
         emit,
         conversation,
+        rootRules,
       );
       rounds.push({ round, phase: "plan_review", review, snapshot: baseline });
       emit({ type: "review", phase: "plan_review", review });
@@ -268,6 +276,7 @@ export async function runBuild(
         changed,
         emit,
         conversation,
+        conventions.render(await conventions.collect(root, changed)),
       );
       rounds.push({ round, phase: "diff_review", review, snapshot });
       emit({ type: "review", phase: "diff_review", review });

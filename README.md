@@ -136,6 +136,29 @@ settled, and refused a third where the reviewer had mistaken a behaviour change 
 regression. The empty array was never the bug; it was the most visible exit from one. None of
 that cost a byte of the working tree.
 
+## Your rules, checked
+
+`AGENTS.md` is the one convention file both models read. Claude Code hardcodes CLAUDE.md and
+AGENTS.md discovery; codex knows only AGENTS.md — the string `CLAUDE.md` does not appear in its
+binary at all. Rules written in CLAUDE.md are therefore visible to the builder and invisible to
+the reviewer, which is the one asymmetry this product cannot afford: a standard it is judging
+against but cannot see.
+
+CodeArena reads those files itself and quotes them into the review, rather than hoping the
+reviewer goes looking. Scope follows the rule codex documents for itself, so the two agree
+about which file governs which code: a file governs the directory tree it sits in, and a more
+deeply nested one wins where they conflict. Unmet rules come back as findings; met ones are
+passed over in silence.
+
+No new format — whatever your project writes is what the change is checked against. `New
+project…` scaffolds a starter `AGENTS.md`; this repository's own is at
+[AGENTS.md](AGENTS.md).
+
+The reviewer is also asked what a change makes **stale** — documentation still describing the
+old behaviour, callers left unupdated, a test that should exist for the new contract. Those are
+part of a change despite being absent from its diff, and nothing else in the pipeline looks for
+them.
+
 ## Two layers of containment
 
 The builder edits your real working tree, so its blast radius is contained twice. The layers

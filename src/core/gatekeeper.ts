@@ -45,6 +45,27 @@ export class Cancelled extends Error {
  * The conversation, when there is one. Placed before everything the implementer wrote, so the
  * requirement is read before the claims about it.
  */
+/**
+ * The project's own rules, quoted rather than left to be found.
+ *
+ * These are the repository's standard for what a finished change looks like, so compliance is
+ * reported explicitly: an unmet rule is a finding, and a rule that does not apply is silence,
+ * not a paragraph explaining why.
+ */
+function conventionsSection(conventions?: string): string[] {
+  if (!conventions?.trim()) return [];
+  return [
+    "--- THE PROJECT'S OWN RULES ---",
+    "These are this repository's stated conventions. A more deeply nested file governs the",
+    "subtree it sits in and takes precedence where it conflicts with one above it. Check the",
+    "work against them and report any that are not met as findings. Say nothing about the ones",
+    "that are met or do not apply.",
+    "",
+    conventions.trim(),
+    "",
+  ];
+}
+
 function conversationSection(conversation?: string): string[] {
   if (!conversation?.trim()) return [];
   return ["--- CONVERSATION WITH THE ENGINEER ---", conversation.trim(), ""];
@@ -180,7 +201,13 @@ approved -- you are being asked whether the reasoning holds.`,
   }
 
   /** Review the builder's plan before a single file is touched. */
-  async reviewPlan(task: string, plan: string, emit: Emit, conversation?: string): Promise<Review> {
+  async reviewPlan(
+    task: string,
+    plan: string,
+    emit: Emit,
+    conversation?: string,
+    conventions?: string,
+  ): Promise<Review> {
     // One thread across all plan rounds, so round 2 knows what it asked for in round 1.
     this.planThread ??= this.newThread();
     const prompt = [
@@ -190,6 +217,7 @@ approved -- you are being asked whether the reasoning holds.`,
       "task correctly: wrong approach, missed requirement, ignored existing abstraction,",
       "unhandled failure mode, or a plan that contradicts how this repository already works.",
       "",
+      ...conventionsSection(conventions),
       ...conversationSection(conversation),
       "--- WHAT THE ENGINEER ASKED FOR ---",
       task,
@@ -208,6 +236,7 @@ approved -- you are being asked whether the reasoning holds.`,
     changedFiles: string[],
     emit: Emit,
     conversation?: string,
+    conventions?: string,
   ): Promise<Review> {
     this.diffThread ??= this.newThread();
     const prompt = [
@@ -218,6 +247,13 @@ approved -- you are being asked whether the reasoning holds.`,
       "requirements from the task, error paths that were skipped, and anything the plan",
       "promised but the diff does not deliver.",
       "",
+      "Also report what the change makes STALE. A change has consequences outside its own",
+      "diff -- documentation that now describes the old behaviour, callers that were not",
+      "updated, a test that should exist for the new contract and does not. Those are part of",
+      "the change even though they are absent from it, and nothing else in this pipeline is",
+      "looking for them.",
+      "",
+      ...conventionsSection(conventions),
       `--- FILES CHANGED (${changedFiles.length}) ---`,
       changedFiles.join("\n") || "(none)",
       "",
